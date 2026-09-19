@@ -1,0 +1,9 @@
+reference/
+.venv/
+__pycache__/
+*.pyc
+.artifacts/
+node_modules/
+*.egg-info/
+.codex/config.toml
+build/

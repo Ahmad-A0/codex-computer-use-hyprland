@@ -1,0 +1,10 @@
+{
+  "name": "codex-computer-use-hyprland",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "doctor": ".venv/bin/sky-hyprland doctor",
+    "cua": "node scripts/launch.mjs"
+  }
+}
