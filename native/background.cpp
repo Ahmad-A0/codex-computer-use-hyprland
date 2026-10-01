@@ -21,6 +21,8 @@
 #include <hyprland/src/output/Monitor.hpp>
 #include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/layout/target/Target.hpp>
+#include <hyprland/src/layout/space/Space.hpp>
 #include <json-c/json.h>
 #include <cerrno>
 #include <chrono>
