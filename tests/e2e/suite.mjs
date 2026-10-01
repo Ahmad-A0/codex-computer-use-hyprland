@@ -66,13 +66,15 @@ async function until(check, describe, timeout = 5000) {
 const client = (id) => clients().find((c) => c.class === id || c.initialClass === id);
 
 // Helpers defined inside the REPL; sent as source to avoid string escaping.
-function e2eIndex(tree, name) {
-  const line = tree.split(String.fromCharCode(10)).find((l) => l.includes(name));
+function e2eIndex(tree, name, role) {
+  // Lines are "<id> <role> (<states>) <name>…"; a role picks e.g. an entry over its label.
+  const line = tree.split(String.fromCharCode(10)).find((l) => l.includes(name)
+    && (role === undefined || l.trim().replace(/^\d+ /, '').startsWith(role)));
   if (line === undefined) throw new Error(`No element named ${name} in:\n${tree.slice(0, 2000)}`);
   return Number(line.trim().match(/^(\d+)/)[1]);
 }
-async function e2eFind(app, name) {
-  return e2eIndex(await app.getAXState({ emit: false, disableDiffing: true }), name);
+async function e2eFind(app, name, role) {
+  return e2eIndex(await app.getAXState({ emit: false, disableDiffing: true }), name, role);
 }
 
 const runtime = resolveRuntime();
@@ -98,6 +100,19 @@ const original = new Set(clients().map((c) => c.address));
 
 const tests = [];
 const test = (name, run, { needs } = {}) => tests.push({ name, run, needs });
+// Never drive the user's own windows: getApp reuses any existing window of the
+// app, so refuse when the backend already maps one to this desktop entry.
+function existingWindows(app) {
+  const code = 'import json,sys; from codex_hyprland.backend import Backend; b=Backend(); '
+    + 'print(json.dumps([w for a in b.list_apps({}) if a["id"]==sys.argv[1] for w in a["windows"]]))';
+  return JSON.parse(execFileSync(join(root, '.venv/bin/python'), ['-c', code, app],
+    { encoding: 'utf8', env: { ...process.env, XDG_DATA_HOME: out } })).filter((w) => original.has(`0x${w.id.toString(16)}`));
+}
+async function bind(variable, app, options) {
+  const existing = existingWindows(app);
+  if (existing.length) throw new Error(`refusing: ${app} would reuse existing windows ${JSON.stringify(existing)}`);
+  await js(`globalThis.${variable} = await cua.getApp(${JSON.stringify(app)});`, options);
+}
 
 test('Codex resolves cua_repl to this provider', async () => {
   const output = execFileSync('codex', ['mcp', 'get', 'cua_repl'], { encoding: 'utf8' });
@@ -120,7 +135,7 @@ test('native inventory', async () => {
 });
 
 test('GTK: getApp launches silently, asks approval, enables accessibility', async () => {
-  await js(`globalThis.gtk = await cua.getApp("codex-e2e-gtk.desktop");`, { timeout: 30000 });
+  await bind('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
   const c = client('codex-e2e-gtk');
   if (c.workspace.name !== 'codex') throw new Error(`launched on workspace ${c.workspace.name}`);
   const environment = readFileSync(`/proc/${c.pid}/environ`, 'utf8').split('\0');
@@ -201,7 +216,7 @@ test('GTK: getApp reuses the running app', async () => {
 });
 
 test('XWayland: setValue, Unicode typing, click, paste', async () => {
-  await js(`globalThis.xgtk = await cua.getApp("codex-e2e-xgtk.desktop");`, { timeout: 30000 });
+  await bind('xgtk', 'codex-e2e-xgtk.desktop', { timeout: 30000 });
   if (!client('codex-e2e-xgtk').xwayland) throw new Error('fixture is not running under XWayland');
   await js(`await xgtk.setValue(await e2eFind(xgtk, "E2E entry"), "x11 value");`);
   await until(() => state('codex-e2e-xgtk').text === 'x11 value', 'setValue');
@@ -216,7 +231,7 @@ test('XWayland: setValue, Unicode typing, click, paste', async () => {
 });
 
 test('Qt: accessibility tree, setValue, click', async () => {
-  await js(`globalThis.qt = await cua.getApp("codex-e2e-qt.desktop");`, { timeout: 30000 });
+  await bind('qt', 'codex-e2e-qt.desktop', { timeout: 30000 });
   await js(`await qt.setValue(await e2eFind(qt, "Qt entry"), "qt value");`);
   await until(() => state('codex-e2e-qt').text === 'qt value', 'Qt entry text');
   await js(`await qt.click(await e2eFind(qt, "Qt button")); await qt.getAXState({ emit: false });`);
@@ -224,19 +239,25 @@ test('Qt: accessibility tree, setValue, click', async () => {
 }, { needs: apps['codex-e2e-qt'] ? null : 'PyQt6 not installed' });
 
 test('Chromium: accessibility tree, typing, click', async () => {
-  await js(`globalThis.page = await cua.getApp("codex-e2e-browser.desktop");`, { timeout: 60000 });
-  const title = () => client('codex-e2e-browser')?.title ?? '';
-  await js(`const i = await e2eFind(page, "Page input"); await page.click(i); await page.typeText("from codex");
+  // Chromium names --app windows after the page, so use the documented Linux
+  // flow: launch_app, then bind the new window found by title.
+  await js(`await cua.computer.launch_app({ app: "codex-e2e-browser.desktop" });`);
+  await until(() => clients().some((c) => c.title.startsWith('Codex E2E Page')), 'browser window', 30000);
+  const window = () => clients().find((c) => c.title.startsWith('Codex E2E Page'));
+  if (window().workspace.name !== 'codex') throw new Error(`browser opened on workspace ${window().workspace.name}`);
+  await js(`globalThis.page = await cua.getApp({ windowId: ${parseInt(window().address, 16)} });`);
+  const title = () => window()?.title ?? '';
+  await js(`const i = await e2eFind(page, "Page input", "entry"); await page.click(i); await page.typeText("from codex");
     await page.getAXState({ emit: false });`);
   await until(() => title().startsWith('Codex E2E Page|from codex|'), 'page input', 8000);
-  await js(`await page.click(await e2eFind(page, "Page button")); await page.getAXState({ emit: false });`);
+  await js(`await page.click(await e2eFind(page, "Page button", "button")); await page.getAXState({ emit: false });`);
   await until(() => title().endsWith('|1'), 'page button click', 8000);
 }, { needs: browser ? null : 'no Chromium-based browser' });
 
 test('Terminal: typing and terminal paste shortcut', async () => {
   const typed = join(out, 'terminal-typed.txt');
   const pasted = join(out, 'terminal-pasted.txt');
-  await js(`globalThis.term = await cua.getApp("codex-e2e-terminal.desktop");`, { timeout: 30000 });
+  await bind('term', 'codex-e2e-terminal.desktop', { timeout: 30000 });
   await js(`await term.typeText(${JSON.stringify(`printf typed-ok > ${typed}`)}); await term.pressKey("Return");
     await term.getScreenshot({ emit: false });`);
   await until(() => readFileSync(typed, 'utf8') === 'typed-ok', 'typed command ran');
@@ -280,7 +301,7 @@ try {
 } finally {
   provider.stop();
   for (const c of clients()) {
-    if (!original.has(c.address) && String(c.class).startsWith('codex-e2e')) {
+    if (!original.has(c.address) && (String(c.class).startsWith('codex-e2e') || c.title.startsWith('Codex E2E'))) {
       try { process.kill(c.pid, 'SIGTERM'); } catch {}
     }
   }

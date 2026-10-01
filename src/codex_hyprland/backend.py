@@ -101,8 +101,12 @@ class Backend:
     @staticmethod
     def app_aliases(app):
         wmclass = app.get_startup_wm_class() if hasattr(app, "get_startup_wm_class") else None
+        # A declared window class identifies the entry's windows exactly. The
+        # executable name would also claim every other window of a shared
+        # program (e.g. a custom kitty entry claiming all kitty windows).
+        executable = None if wmclass else Path(app.get_executable() or "").name
         return {s.casefold() for s in (app.get_id().removesuffix(".desktop"), app.get_name(),
-                wmclass, Path(app.get_executable() or "").name) if s}
+                wmclass, executable) if s}
 
     def terminal_client(self, client):
         # Desktop categories cover terminal emulators regardless of brand or

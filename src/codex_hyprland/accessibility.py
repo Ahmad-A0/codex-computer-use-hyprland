@@ -62,7 +62,9 @@ class Accessibility:
                 frame.clear_cache()
                 if frame.get_state_set().contains(self.api.StateType.DEFUNCT):
                     continue
-                if frame.get_role_name() in ("frame", "window", "dialog", "alert"):
+                # Direct application children are toplevels; Qt reports a plain
+                # QWidget window as "filler".
+                if frame.get_role_name() in ("frame", "window", "dialog", "alert", "filler"):
                     frames.append(frame)
         cached = self.roots.get(client["address"])
         if cached:
@@ -181,6 +183,10 @@ class Accessibility:
             raise ValueError("AT-SPI window disappeared during observation")
         if truncated:
             tree["description"] = "Accessibility tree truncated by time, depth, or node budget."
+        elif not tree["children"]:
+            # Typically a Chromium/Electron app started without accessibility.
+            tree["description"] = ("This window exposes no accessible content; use screenshot coordinates. "
+                                   "Chromium and Electron apps expose it when launched through getApp.")
         if query:
             def keep(node):
                 kids = [v for c in node["children"] if (v := keep(c)) is not None]
