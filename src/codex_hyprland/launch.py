@@ -4,17 +4,22 @@ Hyprland applies an exec rule to a window whose process environment carries its
 token, or whose PID is the process it spawned. Chromium-based apps overwrite
 their environment, so this process replaces itself with the app to keep the PID.
 Entries needing GLib's launcher (terminal, D-Bus activation) still use it.
+
+The exec rule only places the app's first window. The launched process is also
+registered with the compositor module, and marked in its environment, so that
+the windows it opens later follow it to its workspace without focus.
 """
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import json
 from pathlib import Path
 import gi
 gi.require_version('Gio', '2.0')
-from gi.repository import Gio
+from gi.repository import Gio, GLib
 
 
 def report(result):
@@ -23,6 +28,17 @@ def report(result):
         temporary = status.with_suffix('.tmp')
         temporary.write_text(json.dumps(result))
         temporary.replace(status)
+
+
+def register(pid):
+    """Tell the compositor module where this launch belongs (best effort: without
+    the module the exec rule still places the first window)."""
+    workspace = os.environ.get('CODEX_HYPRLAND_PLACEMENT', '')
+    request = json.dumps({'op': 'launched', 'pid': pid, 'workspace': '' if workspace == 'current' else workspace})
+    try:
+        subprocess.run(['hyprctl', 'codex-background', request], capture_output=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def chromium_based(program, depth=0):
@@ -69,9 +85,17 @@ if __name__ == '__main__':
         if app is None:
             raise RuntimeError('Desktop application not found')
         argv = command(app)
-        if app.get_boolean('Terminal') or app.get_boolean('DBusActivatable') or not argv:
+        if app.get_boolean('DBusActivatable') or not argv:
             if not app.launch([], None):
                 raise RuntimeError('Desktop application launch failed')
+            report({'ok': True})
+        elif app.get_boolean('Terminal'):
+            launched = []
+            if not app.launch_uris_as_manager([], None, GLib.SpawnFlags.SEARCH_PATH, None, None,
+                                              lambda _app, pid, *_: launched.append(pid), None):
+                raise RuntimeError('Desktop application launch failed')
+            for pid in launched:
+                register(pid)
             report({'ok': True})
         else:
             if not shutil.which(argv[0]):
@@ -83,6 +107,7 @@ if __name__ == '__main__':
             directory = app.get_string('Path')
             if directory:
                 os.chdir(directory)
+            register(os.getpid())
             report({'ok': True})
             os.execvp(argv[0], argv)
     except Exception as error:

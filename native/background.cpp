@@ -19,6 +19,8 @@
 #include <hyprland/src/protocols/XDGShell.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/output/Monitor.hpp>
+#include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 #include <json-c/json.h>
 #include <cerrno>
 #include <chrono>
@@ -34,6 +36,8 @@
 #include <fcntl.h>
 #include <map>
 #include <set>
+#include <fstream>
+#include <ranges>
 
 namespace {
 using Json = std::unique_ptr<json_object, decltype(&json_object_put)>;
@@ -50,6 +54,7 @@ double num(json_object* j,const char* key) { auto v=field(j,key); require(json_o
 #include "activation.hpp"
 #include "capture.hpp"
 #include "drag.hpp"
+#include "placement.hpp"
 
 struct TextKeyboard final : IKeyboard {
     bool isVirtual() override { return true; }
@@ -179,7 +184,7 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             while(offset<data.size()){auto n=read(file.fd,data.data()+offset,data.size()-offset);if(n<0 && errno==EINTR)continue;require(n>0,"Cannot read request file");offset+=n;}
             j.reset(json_tokener_parse(data.c_str()));require(bool(j),"Invalid request file JSON");op=str(j.get(),"op");
         }
-        if(op=="status") return std::string("{\"ok\":true,\"version\":2,\"build\":\"")+CODEX_BUILD_ID+"\",\"offers\":"+std::to_string(Clipboard::offers.size())+",\"busy\":"+(Drag::origin || !Clipboard::transfers.empty() || Clipboard::Copy::client || !Capture::leases.empty() || Activation::active()?"true":"false")+",\"epoch\":"+std::to_string(Held::epoch)+",\"holds\":"+std::to_string(Held::states.size())+"}";
+        if(op=="status") return std::string("{\"ok\":true,\"version\":2,\"build\":\"")+CODEX_BUILD_ID+"\",\"offers\":"+std::to_string(Clipboard::offers.size())+",\"busy\":"+(Drag::origin || !Clipboard::transfers.empty() || Clipboard::Copy::client || !Capture::leases.empty() || Activation::active()?"true":"false")+",\"epoch\":"+std::to_string(Held::epoch)+",\"holds\":"+std::to_string(Held::states.size())+",\"placed\":"+std::to_string(Placement::placed)+"}";
         if(op=="drain"){require(!Drag::origin && !Activation::active() && Capture::leases.empty(),"Input or capture still active");Clipboard::Copy::end();Held::drop();Popups::dismiss();Clipboard::drain();Routing::restore();return R"({"ok":true})";}
         if(op=="drag_status" || op=="drag_end"){if(op=="drag_end"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");require(!g_pInputManager->hasHeldButtons(),"Physical mouse button held");}return Drag::state(op=="drag_end");}
         if(op=="activation_end"){Activation::end();return R"({"ok":true})";}
@@ -189,6 +194,7 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         if(op=="copy_status") return Clipboard::Copy::state();
         if(op=="copy_read") return Clipboard::Copy::read(j.get());
         if(op=="copy_end"){Clipboard::Copy::end();return R"({"ok":true})";}
+        if(op=="launched")return Placement::launched(j.get());
         if(op=="refresh_end"){Capture::release(num(j.get(),"token"));return R"({"ok":true})";}
         auto window=Desktop::viewState()->query().selector("address:"+str(j.get(),"address")).runWindow();
         require(window && Desktop::View::validMapped(window),"Target is not mapped");
@@ -308,6 +314,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     Drag::setup(plugin);
     Popups::setup(plugin);
     Activation::setup(plugin);
+    Placement::setup(plugin);
     return {"codex-background","Window-targeted input without compositor focus or cursor movement","Codex Hyprland provider","0.1.0"};
 }
-APICALL EXPORT void PLUGIN_EXIT() { Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Routing::clear(); Clipboard::clear(); }
+APICALL EXPORT void PLUGIN_EXIT() { Placement::clear(); Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Routing::clear(); Clipboard::clear(); }
