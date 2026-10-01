@@ -11,7 +11,15 @@ not in the open-source openai/codex repository.
 
 Runtime versions are diagnostic. Do not gate on exact package versions,
 whole-file hashes, or documentation wording. Source hashes invalidate cached
-copies. Retain the Hyprland ABI check and required code-patch match checks.
+copies. Retain the Hyprland ABI check and the runtime layout checks.
+
+Upstream @oai code is minified and its local identifiers change on every
+rebuild. `scripts/prepare-runtime.mjs` may depend only on what survives
+minification: file paths, ES module import/export names, string literals,
+property names and `.d.ts` declarations. Prefer replacing or generating whole
+modules (`scripts/runtime/`) over string patches of minified code; the one
+remaining patch (`getApp` by name) is anchored on literals with identifier
+wildcards. Never anchor on a minified local name.
 
 Do not add unit tests (user request). Validate changes with syntax checks and
 bounded live runs against a disposable native application. Do not use the user's

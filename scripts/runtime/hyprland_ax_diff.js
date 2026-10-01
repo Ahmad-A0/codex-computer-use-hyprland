@@ -1,4 +1,4 @@
-// Prepended to the private copy of @oai/cua's bind_linux_app.js. Reproduces the
+// Copied next to bind_linux_app.js in the private @oai/cua copy. Reproduces the
 // macOS get_app_state text: diffs against the previous observation of the same
 // window unless disableDiffing is set. Element IDs come from Sky's ElementIds,
 // which keep an element's number while its native accessibility ID survives.
@@ -24,7 +24,7 @@ function axRanges(ids) {
     ...ids.filter((id) => !/^\d+$/.test(id))].join(", ");
 }
 
-function axState(state, options) {
+export function axState(state, options) {
   const full = state.ax_tree.to_string();
   const prefix = `Accessibility source: ${state.ax_tree_source}\n`;
   const lines = axLines(full);

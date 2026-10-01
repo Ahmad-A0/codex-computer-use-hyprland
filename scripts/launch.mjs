@@ -53,7 +53,7 @@ export function environment(input = process.env) {
     NODE_REPL_NODE_MODULE_DIRS: [overlay, modules, input.NODE_REPL_NODE_MODULE_DIRS].filter(Boolean).join(':'),
     NODE_REPL_TRUSTED_CODE_PATHS: [overlay, modules, input.NODE_REPL_TRUSTED_CODE_PATHS].filter(Boolean).join(':'),
     NODE_REPL_TRUSTED_SERVICES: JSON.stringify(services),
-    // The private upstream copy has narrowly patched Linux method bodies; public signatures are unchanged.
+    // The private upstream copy replaces the Linux app binding and Sky client; public signatures are unchanged.
     NODE_REPL_JS_BANNER: `await import("@oai/cua/tinyskyAlt"); await nodeRepl.write(${JSON.stringify(providerNotice)});`,
   }};
 }

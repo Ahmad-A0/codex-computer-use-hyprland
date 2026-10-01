@@ -13,12 +13,20 @@ Codex → official cua_repl / NodeREPL → private official cua / Sky copy
 ```
 
 `prepare-runtime.mjs` makes an ignored local copy of the installed `@oai/cua`
-and `@oai/sky` packages. Narrow, exact-match patches remove Linux-only method
-rejections and forward the same public calls to our backend. Only the required
-code replacements must match once; package versions are recorded for diagnosis.
-Documentation updates and unrelated source changes do not block startup. Source
-hashes refresh the cache when the installed packages change. Installed Codex files
-are never edited. The incompatible community `native-client.mjs` API is not used.
+and `@oai/sky` packages. Upstream code is minified and its local names change on
+every rebuild, so the copy depends only on what minification preserves: file
+paths, module export names, string literals, property names and `.d.ts` types.
+CUA's Linux app binding (`bind_linux_app.js`) is replaced by our readable
+`scripts/runtime/bind_linux_app.js`, which implements the macOS behaviour of the
+same `App` methods. Sky's Linux `create_client.js` is generated from the
+`create_<command>` modules beside it, plus our extra backend commands and the app
+approval gate. The one remaining patch lets `getApp` take an app name; it is
+anchored on literals. Missing exports, a changed typed interface, or a failed load
+check of the finished copy stop startup with a message naming the change; package
+versions are recorded for diagnosis. Documentation updates and unrelated source
+changes do not block startup. Source hashes refresh the cache when the installed
+packages change. Installed Codex files are never edited. The incompatible
+community `native-client.mjs` API is not used.
 
 ## Setup
 
@@ -349,9 +357,10 @@ Its report is `.artifacts/sol-background/report.md`.
 
 The current runtime overlay targets the October 1, 2026 installed bundle:
 `@oai/cua` 0.2.5, `@oai/sky` 0.7.4, and `@oai/cua-repl` 0.1.0. CUA's Linux app
-binding moved out of `create_tinysky_alt.js` into `bind_linux_app.js`; the patches
-now follow that layout. Browser bindings, observations, declaration files, and
-MCP tool descriptions come from the current official packages. An older private
+binding moved out of `create_tinysky_alt.js` into `bind_linux_app.js`, which the
+overlay now replaces whole. The 26.928 bundle (`@oai/sky` 0.7.5), whose rebuild
+only renamed minified locals, prepares unchanged. Browser bindings, observations,
+declaration files, and MCP tool descriptions come from the current official packages. An older private
 `build/cua-node-runtime` snapshot is no longer the configured runtime.
 
 The public `openai/codex` repository supplies the CLI/MCP host, but its current
@@ -359,9 +368,10 @@ tree does not include the bundled `@oai/cua`, `@oai/sky`, or `@oai/cua-repl`
 implementation. Those installed JavaScript sources and declarations define the
 interface audited here. Matching public method signatures does not imply
 identical platform behavior; the remaining parity gaps above still apply.
-Upstream runtime versions are not pinned. Bundles continue to work when the
-required patch sites still match. Documentation wording and unrelated file
-changes only refresh cached copies. A changed patch site requires updating the
+Upstream runtime versions are not pinned. Bundles continue to work while the
+module paths, export names, literals and declared interfaces the overlay uses
+remain; renamed minified locals, documentation wording and unrelated file changes
+only refresh cached copies. A reported layout change requires updating the
 adapter; an incompatible Sky protocol may require backend changes. Hyprland's
 native ABI check remains necessary for loading the compositor plugin.
 

@@ -1,5 +1,5 @@
-// Prepended (after the parity transport) to the private copies of Sky's Linux
-// create_client.js. Mirrors @oai/sky's macOS computer-use-policy.js: each app
+// Copied next to the generated create_client.js in the private copies of Sky's
+// Linux target. Mirrors @oai/sky's macOS computer-use-policy.js: each app
 // action asks "Allow Computer Use to use X?" through nodeRepl.createElicitation,
 // and node_repl's computer-use interceptor auto-answers session/always grants.
 // Usage telemetry from the macOS module is deliberately not reproduced.
@@ -34,11 +34,11 @@ function approvalCallId() {
   return undefined;
 }
 
-async function approveApp(options, tool, input) {
+async function approveApp(transport, options, tool, input) {
   approvalResponseMeta(null);
   const query = input?.window != null ? { window: input.window }
     : typeof input?.app === "string" ? { app: input.app } : {};
-  const policy = JSON.parse(await parityTransport("app_policy", { options, input: query }));
+  const policy = JSON.parse(await transport("app_policy", { options, input: query }));
   const { target } = policy;
   approvalResponseMeta(target.bundleIdentifier);
   if (policy.decision === "denied") {
@@ -66,7 +66,8 @@ async function approveApp(options, tool, input) {
   if (answer?.action !== "accept") throw new Error(`Computer Use was not approved to use ${target.displayName}`);
 }
 
-function gateApps(options, client) {
+// transport is Sky's sky_linux(command, { options, input }) request function.
+export function gateApps(options, client, transport) {
   // Unattended runs (e.g. disposable-app validation) may opt out explicitly.
   if (/^(0|false|no|off)$/i.test(process.env.CODEX_HYPRLAND_APP_APPROVAL ?? "")) return client;
   for (const name of approvalGated) {
@@ -78,7 +79,7 @@ function gateApps(options, client) {
         const handle = run();
         return Object.assign({}, handle, {
           async start(point) {
-            await approveApp(options, name, point);
+            await approveApp(transport, options, name, point);
             const suspend = globalThis.nodeRepl?.withSuspendedTimeout;
             return typeof suspend === "function" ? suspend(() => handle.start(point)) : handle.start(point);
           },
@@ -87,7 +88,7 @@ function gateApps(options, client) {
       continue;
     }
     client[name] = async function (input) {
-      await approveApp(options, name, input);
+      await approveApp(transport, options, name, input);
       const suspend = globalThis.nodeRepl?.withSuspendedTimeout;
       return typeof suspend === "function" ? suspend(() => run(input)) : run(input);
     };
