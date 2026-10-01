@@ -1,4 +1,4 @@
-# Maintainer: Ahmad-A0 <ahmadadebowale1 at gmail dot com>
+# Maintainer: Ahmad-A0 <aa0 at duck dot com>
 #
 # Release: tag vX.Y.Z on GitHub, set pkgver, run `updpkgsums` (replaces SKIP with
 # the tarball's sha256) and `makepkg --printsrcinfo > .SRCINFO`.
