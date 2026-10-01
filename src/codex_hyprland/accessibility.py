@@ -17,7 +17,12 @@ LAUNCH_ENVIRONMENT = {"ACCESSIBILITY_ENABLED": "1", "QT_LINUX_ACCESSIBILITY_ALWA
 
 # Roles whose unnamed instances take their name from a labelled-by target, as
 # GTK 4 menu items do (their label is a separate, otherwise hidden object).
-LABELLED_ROLES = ("menu item", "check menu item", "radio menu item")
+# Unnamed controls take their name from the label they are "labelled by", as
+# screen readers do and as a macOS text field takes its title from its label
+# (GTK 3's file chooser name field is unnamed beside a "Name" label).
+LABELLED_ROLES = ("menu item", "check menu item", "radio menu item", "text", "entry", "password text",
+                  "combo box", "spin button", "slider", "check box", "radio button", "push button",
+                  "toggle button", "list", "list box", "table", "tree table", "scroll pane")
 # Popup roots that some toolkits announce only through events: Qt lists no
 # Qt::Popup window among the application's children, and a GTK 4 entry's
 # context menu hangs below an object its entry does not list as a child.
