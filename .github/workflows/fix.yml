@@ -1,0 +1,74 @@
+name: fix
+# Claude Code (on the maintainer's subscription token) reproduces an upstream
+# breakage in the end-to-end VM, fixes it, and opens a pull request. It never
+# pushes to main, tags or releases: merging and publishing stay with a human.
+on:
+  workflow_call:
+    inputs:
+      issue:
+        type: string
+        required: true
+      failed_run:
+        type: string
+        required: false
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue describing the breakage
+        required: true
+      failed_run:
+        description: Run ID whose artifacts show the failure (optional)
+        required: false
+concurrency:
+  group: fix-${{ inputs.issue }}
+  cancel-in-progress: false
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/e2e-vm-host
+      - name: Failure evidence
+        if: inputs.failed_run != ''
+        run: gh run download "${{ inputs.failed_run }}" --dir failed-run || echo 'no artifacts'
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          claude_args: --max-turns 400 --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+          prompt: |
+            You maintain this repository: a Hyprland provider for OpenAI's Codex computer-use
+            interface. Read AGENTS.md and README.md first and follow them.
+
+            Issue #${{ inputs.issue }} in ${{ github.repository }} reports that the end-to-end
+            suite failed after an upstream update (OpenAI's chatgpt-bin package, which ships the
+            closed computer-use runtime, and/or Arch's Hyprland). Read it with `gh issue view
+            ${{ inputs.issue }} --comments`. The failing run's artifacts (results.json, provider.log,
+            report.html with screenshots and accessibility trees, versions.json) are in
+            ./failed-run if present; look at the screenshots, not only the errors.
+
+            1. Reproduce with `./test` (boots a disposable Arch VM with the latest packages,
+               installs the provider like a user, runs the suite; E2E_ONLY=<regex> selects tests,
+               E2E_ARTIFACTS=<dir> keeps results). Each run takes several minutes: run at most 6.
+            2. Find the root cause and make the smallest correct fix. Never weaken or delete a
+               test to make it pass, and never gate on exact upstream versions. If OpenAI's
+               runtime changed shape, adapt the runtime adapter (scripts/prepare-runtime.mjs and
+               scripts/runtime/); if Hyprland internals changed, adapt native/ (guard version
+               differences with Hyprland's version macros so older releases still build).
+            3. Rerun the full `./test` until it passes.
+            4. Push a branch named fix/issue-${{ inputs.issue }} and open a pull request against
+               main with `gh pr create`: what broke, why, the fix, and the passing test evidence
+               (summary of results.json). Reference "Fixes #${{ inputs.issue }}".
+            If you cannot fix it within the budget, comment on the issue with your findings,
+            what you tried and the evidence instead. Do not push to main, create tags or
+            releases, or change workflow files.
