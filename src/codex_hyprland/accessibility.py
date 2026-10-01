@@ -163,6 +163,10 @@ class Accessibility:
                 enum = getattr(self.api.StateType, state.upper(), None)
                 if enum is not None and states.contains(enum):
                     node["states"].append(state)
+            # GTK 4 reports usable widgets as sensitive but never enabled; the
+            # official formatter would then label every control "disabled".
+            if "sensitive" in node["states"] and "enabled" not in node["states"]:
+                node["states"].append("enabled")
             if obj.is_action():
                 node["actions"] = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
             if role != "password text" and obj.is_text():

@@ -9,13 +9,13 @@ import { bind, client, clients, entry, expect, js, launchDirect, out, provider, 
 // a custom kitty entry while the user has kitty open): the bug that once bound
 // the user's focused kitty window and typed into it.
 const shared = sharedProgram('codex-e2e-shared');
-entry('codex-e2e-custom', 'Codex E2E Custom', `${shared} ${statePath('codex-e2e-custom')} codex-e2e-custom`,
+entry('codex-e2e-custom', 'Codex E2E Custom', `${shared} ${statePath('codex-e2e-custom')} codex-e2e-custom "Codex E2E Custom"`,
   'StartupWMClass=codex-e2e-custom\n');
 entry('codex-e2e-declined', 'Codex E2E Declined',
-  `${shared} ${statePath('codex-e2e-declined')} codex-e2e-declined`, 'StartupWMClass=codex-e2e-declined\n');
+  `${shared} ${statePath('codex-e2e-declined')} codex-e2e-declined "Codex E2E Declined"`, 'StartupWMClass=codex-e2e-declined\n');
 // Authentication prompts are forbidden apps, like macOS's safety refusals.
 entry('codex-e2e-forbidden', 'Codex E2E Forbidden',
-  `${shared} ${statePath('gcr-prompter')} gcr-prompter`, 'StartupWMClass=gcr-prompter\n');
+  `${shared} ${statePath('gcr-prompter')} gcr-prompter "Codex E2E Forbidden"`, 'StartupWMClass=gcr-prompter\n');
 const sentinel = 'codex-e2e-clipboard-sentinel';
 
 export function setup(test) {

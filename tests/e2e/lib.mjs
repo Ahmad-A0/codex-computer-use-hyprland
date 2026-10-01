@@ -48,15 +48,20 @@ export function expect(condition, message) {
 
 // Disposable apps, reached through desktop entries the way a user's apps are.
 export const apps = {};
+// Window classes our entries launch, including real apps, for cleanup.
+export const launchedClasses = new Set();
 export function entry(id, name, exec, extra = '') {
+  const wmclass = extra.match(/^StartupWMClass=(.*)$/m)?.[1];
+  if (wmclass) launchedClasses.add(wmclass);
   writeFileSync(join(out, 'applications', `${id}.desktop`),
     `[Desktop Entry]\nType=Application\nName=${name}\nExec=${exec}\n${extra}`);
   apps[id] = { id, name };
 }
 export const gtkFixture = join(fixtures, 'gtk.py');
 export const statePath = (id) => join(out, `${id}.json`);
-export const gtk = (id, name, { backend = 'wayland', title } = {}) => entry(id, name,
-  `/usr/bin/env GDK_BACKEND=${backend} python3 ${gtkFixture} ${statePath(id)} ${id}${title ? ` "${title}"` : ''}`,
+// Each fixture window gets a unique title (its name) so lookups can't confuse them.
+export const gtk = (id, name, { backend = 'wayland', title = name } = {}) => entry(id, name,
+  `/usr/bin/env GDK_BACKEND=${backend} python3 ${gtkFixture} ${statePath(id)} ${id} "${title}"`,
   `StartupWMClass=${id}\n`);
 export const state = (id) => JSON.parse(readFileSync(statePath(id), 'utf8'));
 export const stateOf = (pid) => JSON.parse(readFileSync(join(out, `twin-${pid}.json`), 'utf8'));
@@ -78,19 +83,24 @@ export function sharedProgram(name) {
 
 // Helpers defined inside the REPL; sent as source to avoid string escaping.
 function e2eIndex(tree, name, role) {
-  // Lines are "<id> <role> (<states>) <name>…"; a role picks e.g. an entry over its label.
-  const line = tree.split(String.fromCharCode(10)).find((l) => l.includes(name)
-    && (role === undefined || l.trim().replace(/^\d+ /, '').startsWith(role)));
+  // Lines are "<id> <role> (<states>) <name>, <details>". Match the name itself,
+  // never an ID or another field; a role picks e.g. an entry over its label.
+  const line = tree.split(String.fromCharCode(10)).find((l) => {
+    const rest = l.trim().replace(/^\d+ /, '');
+    if (role !== undefined && !(rest === role || rest.startsWith(`${role} `))) return false;
+    const label = role === undefined ? rest : rest.slice(role.length).trim().replace(/^\([^)]*\) ?/, '');
+    return role === undefined ? label.includes(name) : label === name || label.startsWith(`${name},`);
+  });
   if (line === undefined) throw new Error(`No ${role ?? 'element'} named ${name} in:\n${tree.slice(0, 2500)}`);
   return Number(line.trim().match(/^(\d+)/)[1]);
 }
 async function e2eFind(app, name, role) {
   return e2eIndex(await app.getAXState({ emit: false, disableDiffing: true }), name, role);
 }
-async function e2eWindow(title) {
-  const window = (await cua.listWindows({ emit: false })).find((w) => w.title === title);
-  if (window === undefined) throw new Error(`No window titled ${title}`);
-  return window;
+async function e2eWindow(title, app) {
+  const windows = (await cua.listWindows({ emit: false })).filter((w) => w.title === title && (app === undefined || w.app === app));
+  if (windows.length !== 1) throw new Error(`Expected one window titled ${title}, found ${windows.length}`);
+  return windows[0];
 }
 
 const runtime = resolveRuntime();
@@ -147,5 +157,5 @@ export function seatViolation(before) {
   return null;
 }
 
-export const ours = (c) => !original.has(c.address)
-  && (String(c.class).startsWith('codex-e2e') || String(c.title).startsWith('Codex E2E'));
+export const ours = (c) => !original.has(c.address) && (String(c.class).startsWith('codex-e2e')
+  || String(c.title).startsWith('Codex E2E') || launchedClasses.has(c.class));
