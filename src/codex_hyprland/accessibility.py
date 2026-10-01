@@ -280,7 +280,9 @@ class Accessibility:
             return None
         # Direct application children are toplevels; Qt reports a plain QWidget
         # window as "filler". Menus can be "window" (GTK 3) or "frame" (Chromium).
-        frames = [f for f in children if f.get_role_name() in ("frame", "window", "dialog", "alert", "filler")]
+        # GTK 3's file, colour and font dialogs report chooser roles.
+        frames = [f for f in children if f.get_role_name() in (
+            "frame", "window", "dialog", "alert", "filler", "file chooser", "color chooser", "font chooser")]
         cached = self.roots.get(client["address"])
         if cached:
             found = [f for f in frames if self.identity(f) == cached]
@@ -292,7 +294,12 @@ class Accessibility:
             if popups:
                 frames = [f for f in frames if not self.popup_match(f, popups, client)] or frames
         named = [f for f in frames if f.get_name() == client.get("title")]
-        chosen = named[0] if len(named) == 1 else frames[0] if len(frames) == 1 else None
+        # A lone candidate stands for this window only if the app has no other
+        # window; otherwise a dialog could be observed as its main window.
+        from . import desktop
+        sole = sum(1 for c in desktop.query("clients")
+                   if c.get("pid") == client["pid"] and c.get("mapped", True)) == 1
+        chosen = named[0] if len(named) == 1 else frames[0] if len(frames) == 1 and sole else None
         if chosen is None and named:
             sized = []
             for frame in named:

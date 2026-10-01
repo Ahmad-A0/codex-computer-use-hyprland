@@ -414,6 +414,7 @@ class Backend:
         if "element_id" in p:
             if not c or "x" in p or "y" in p:
                 raise ValueError("An element requires one window and no coordinates")
+            self.rendered(c)
             return self.ax.point(c, text(p["element_id"], "element_id", False))
         if c and "x" not in p and "y" not in p:
             return c["size"][0] / 2, c["size"][1] / 2
@@ -447,6 +448,22 @@ class Backend:
         previous.unlink(missing_ok=True)
         return [{"filepath": str(path)}]
 
+    def visible(self, c):
+        shown = set()
+        for monitor in self.hypr.query("monitors"):
+            shown.add(monitor["activeWorkspace"]["id"])
+            if monitor.get("specialWorkspace", {}).get("id"):
+                shown.add(monitor["specialWorkspace"]["id"])
+        return c.get("workspace", {}).get("id") in shown
+
+    def rendered(self, c):
+        """Let a window on a hidden workspace render first. Toolkits such as
+        Chromium pause layout there, so its tree and element positions would
+        lag behind its content (macOS apps keep their accessibility current)."""
+        if not self.visible(c):
+            with background.refreshing(c):
+                pass
+
     def get_window_state(self, p):
         c = self.target(p.get("window"))
         include = p.get("include_screenshot", True)
@@ -455,6 +472,7 @@ class Backend:
         query = text(p.get("query", ""), "query")
         acted = self.wait_for_observation(c)
         c = self.target(p["window"])
+        self.rendered(c)
         # Like macOS, an observation after an action waits for menus it opened.
         tree, source = self.ax.snapshot(c, query, settle=acted, menu=acted and self.expects_menu(c))
         self.menu_actions.discard(int(c['address'], 16))
@@ -492,6 +510,7 @@ class Backend:
                 return
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
+            self.rendered(c)
             x, y = self.ax.point(c, ident)
         else:
             x, y = self.location(p, c)
