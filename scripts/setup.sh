@@ -18,4 +18,6 @@ from PIL import Image
   uv venv --clear --python "$python_bin" --system-site-packages --no-managed-python .venv
 fi
 export UV_PROJECT_ENVIRONMENT="$project_dir/.venv"
-uv sync --locked --no-editable --no-dev --python "$python_bin" --no-managed-python
+# The project version does not change with its sources; always reinstall it.
+uv sync --locked --no-editable --no-dev --python "$python_bin" --no-managed-python \
+  --reinstall-package codex-computer-use-hyprland

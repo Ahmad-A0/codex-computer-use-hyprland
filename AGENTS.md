@@ -4,6 +4,11 @@ authorized narrow frontend patches for parity: validate their required patch
 sites in a private runtime copy, preserve public signatures, and do not edit installed Codex
 packages or monkey-patch live cua objects.
 
+The goal is macOS behaviour under the same public calls: where OpenAI's Linux
+binding is more restrictive than its macOS binding, implement the macOS behaviour.
+Upstream Linux restrictions live in the installed (closed-source) @oai packages,
+not in the open-source openai/codex repository.
+
 Runtime versions are diagnostic. Do not gate on exact package versions,
 whole-file hashes, or documentation wording. Source hashes invalidate cached
 copies. Retain the Hyprland ABI check and required code-patch match checks.

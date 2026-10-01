@@ -1,0 +1,8 @@
+[Unit]
+Description=Prebuild the Codex Hyprland plugin when Hyprland headers change
+
+[Path]
+PathChanged=/usr/include/hyprland/src/version.h
+
+[Install]
+WantedBy=default.target

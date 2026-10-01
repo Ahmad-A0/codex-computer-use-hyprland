@@ -16,7 +16,7 @@ PARAMETERS = {
     "set_value": {"window", "element_id", "value"},
     "paste": {"window", "text", "format"},
     "perform_secondary_action": {"window", "element_id", "action"},
-    "resolve_app": {"app"}, "launch_app": {"app"}, "activate_window": {"window"},
+    "resolve_app": {"app"}, "app_policy": {"window", "app"}, "launch_app": {"app"}, "activate_window": {"window"},
     "move": {"window", "x", "y"}, "move_relative": {"dx", "dy"},
 }
 MAX_LINE = 2 * 1024 * 1024

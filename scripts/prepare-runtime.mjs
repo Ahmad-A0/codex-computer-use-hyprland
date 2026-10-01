@@ -14,8 +14,11 @@ const patches=[
   ['cua',appFile,'void 0!==i&&(n.pixels=o(i.pixels)),s.scroll(n)','"number"==typeof i?n.pages=o(i):void 0!==i?n.pixels=o(i.pixels):n.pages=1,s.scroll(n)'],
   ['cua',appFile,'selectText(){return e(this,void 0,void 0,(function*(){throw new Error("selectText is unavailable on Linux.")}))},setValue(){return e(this,void 0,void 0,(function*(){throw new Error("setValue is unavailable on Linux; use click, pressKey, and typeText.")}))},paste:(e,t)=>(r(t,"Linux"),s.type_text({window:c,text:e}))',
     'selectText:(e,t,i)=>s.select_text({window:c,element_id:String(e),text:t,prefix:i?.prefix,suffix:i?.suffix,selection_type:i?.selectionType??"text"}),setValue:(e,t)=>s.set_value({window:c,element_id:String(e),value:t}),paste:(e,t)=>s.paste({window:c,text:e,format:t?.format??"text"})'],
+  ['cua',appFile,'o=`Accessibility source: ${e.ax_tree_source}\\n${e.ax_tree.to_string()}`;return yield t(o,i),o','o=axState(e,i);return yield t(o,i),o'],
+  ['cua',appFile,'r=`Accessibility source: ${e.ax_tree_source}\\n${e.ax_tree.to_string()}`;yield t(r,o);','r=axState(e,o);yield t(r,o);'],
   ['cua',cuaFile,'const i=p(t,"linux"),e=(yield y.list_windows())','const i="string"==typeof t?(yield y.resolve_app({app:t})).id:p(t,"linux"),e=(yield y.list_windows())'],
   ...packages.map(pkg=>[pkg,linux+'/create_client.js','A={target:"linux",','A={target:"linux",'+additions]),
+  ...packages.map(pkg=>[pkg,linux+'/create_client.js','Object.assign(A,t(x)),A}export{','Object.assign(A,t(x)),gateApps(x,A)}export{']),
 ];
 function replacePatch(source,pkg,path,from,to) {
   if(source.split(from).length!==2) throw new Error(`Runtime patch no longer matches @oai/${pkg}/${path}. Update the adapter for this source layout.`);
@@ -23,7 +26,7 @@ function replacePatch(source,pkg,path,from,to) {
 }
 export function reviewRuntime(runtime) {
   const source=join(runtime,'lib/node_modules/@oai');
-  const digest=createHash('sha256').update(resolve(runtime)).update(readFileSync(fileURLToPath(import.meta.url)));
+  const digest=createHash('sha256').update(resolve(runtime)).update(readFileSync(fileURLToPath(import.meta.url))).update(readFileSync(join(root,'scripts/ax-diff.js'))).update(readFileSync(join(root,'scripts/app-approval.js')));
   const revisions={};
   for(const pkg of packages) {
     const meta=JSON.parse(readFileSync(join(source,pkg,'package.json'),'utf8'));
@@ -70,8 +73,10 @@ export function prepareRuntime(runtime) {
   for(const args of patches) patch(...args);
   for(const pkg of packages) {
     const target=join(temp,'@oai',pkg,linux,'create_client.js');
-    writeFileSync(target,'import {sky_linux as parityTransport} from "./sky_linux.js";\nfunction parity(options, command) { return async function(input) { await options.action_settler.wait(); const result=await parityTransport(command,{options,input:options.element_ids.resolve(input)}); options.action_settler.defer(); if(command==="resolve_app") return JSON.parse(result); }; }\n'+readFileSync(target,'utf8'));
+    writeFileSync(target,'import {sky_linux as parityTransport} from "./sky_linux.js";\nfunction parity(options, command) { return async function(input) { await options.action_settler.wait(); const result=await parityTransport(command,{options,input:options.element_ids.resolve(input)}); options.action_settler.defer(); if(command==="resolve_app") return JSON.parse(result); }; }\n'+readFileSync(join(root,'scripts/app-approval.js'),'utf8')+readFileSync(target,'utf8'));
   }
+  const app=join(temp,'@oai/cua',appFile);
+  writeFileSync(app,readFileSync(join(root,'scripts/ax-diff.js'),'utf8')+readFileSync(app,'utf8'));
   const docs=join(temp,'@oai/cua/docs/tinysky-alt-core-cua-repl.md');
   if(existsSync(docs)) {
     let documentation=readFileSync(docs,'utf8');
@@ -80,6 +85,7 @@ export function prepareRuntime(runtime) {
       ['`getApp` does not launch apps on Linux or Windows.', '`getApp` does not launch apps on Windows. This Hyprland provider supports background launch when passed an app name or inventory ID.'],
       ['Linux and Windows app `paste` support only `text` and use the platform\'s native text input.', 'This Hyprland provider supports text, HTML, and rendered Markdown paste. Wayland uses private clipboard offers. XWayland temporarily owns the shared X clipboard and restores its prior formats unless a newer copy replaces them. Windows app paste supports only text.'],
       ['Native app `scroll` accepts a page count on macOS. On Linux, omit the distance for the native default or pass `{ pixels: 500 }`.', 'Native app `scroll` accepts a page count on macOS and this Hyprland provider. On Hyprland, omitted distance means one viewport page; `{ pixels: 500 }` specifies an exact distance.'],
+      ['Linux and Windows always return full accessibility state.', 'As on macOS, this Hyprland provider returns a diff unless `disableDiffing` is set; Windows always returns full accessibility state.'],
       ['`selectText` is unavailable on Linux and Windows. `setValue` is unavailable on Linux. These methods throw before sending input. Use the supported bound actions to edit the UI and verify the result.', 'This Hyprland provider implements `selectText` and `setValue` through AT-SPI text, editable-text, and value interfaces. Controls without the required interface return a specific error. Windows selectText remains unavailable.'],
     ];
     for(const [from,to] of replacements) {

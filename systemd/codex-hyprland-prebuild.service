@@ -1,0 +1,8 @@
+[Unit]
+Description=Prebuild the Codex Hyprland plugin for the installed Hyprland headers
+
+[Service]
+Type=oneshot
+Nice=10
+# @ROOT@ is replaced by ./install with this checkout's path.
+ExecStart=@ROOT@/scripts/build-native.sh

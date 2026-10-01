@@ -291,10 +291,12 @@ class Backend:
         if type(count) is not int or not 1 <= count <= 3:
             raise ValueError("click_count must be 1, 2, or 3")
         if "element_id" in p:
-            if not c or "x" in p or "y" in p or count != 1 or button == "middle":
-                raise ValueError("Element clicks require a window and one left or right click")
+            if not c or "x" in p or "y" in p:
+                raise ValueError("Element clicks require a window and no coordinates")
             ident = text(p["element_id"], "element_id", False)
-            action = self.ax.primary_action(c, ident, button)
+            # Like macOS, any button and click count works on an element. A
+            # single left/right click prefers the element's AT-SPI action.
+            action = self.ax.primary_action(c, ident, button) if count == 1 and button != "middle" else None
             if action is not None:
                 with self.app_action(c):
                     self.ax.action(c, ident, name=action)
@@ -304,7 +306,8 @@ class Backend:
             x, y = self.ax.point(c, ident)
             self.point(c, x, y)
             with self.seat(c):
-                background.send(c, 'click', x=x, y=y, button=button, count=1)
+                c, x, y = self.input_target(c, x, y)
+                background.send(c, 'click', x=x, y=y, button=button, count=count)
             return
         x, y = self.location(p, c)
         self.point(c, x, y)
@@ -441,8 +444,7 @@ class Backend:
         with self.app_action(c):
             self.ax.action(c, ident, name=action)
 
-    def resolve_app(self, p):
-        name = text(p.get("app"), "app", False)
+    def find_app(self, name):
         entries = self.apps()
         exact = [a for a in entries if a.get_id() == name or
                  (hasattr(a, "get_filename") and a.get_filename() == name)]
@@ -454,7 +456,10 @@ class Backend:
                 matches = preferred
         if len(matches) != 1:
             raise ValueError("App not found or ambiguous; use its inventory ID or desktop-entry path")
-        ident = matches[0].get_id()
+        return matches[0]
+
+    def resolve_app(self, p):
+        ident = self.find_app(text(p.get("app"), "app", False)).get_id()
         launched = False
         deadline = time.monotonic() + 10
         while True:
@@ -470,6 +475,39 @@ class Backend:
             if time.monotonic() >= deadline:
                 raise RuntimeError("Application did not expose a window after launch")
             time.sleep(.05)
+
+    def client_app(self, client):
+        names = {client.get(k, "").casefold() for k in ("class", "initialClass")} - {""}
+        return next((a for a in self.apps() if names & self.app_aliases(a)), None)
+
+    def app_policy(self, p):
+        """Describe the approval target in the macOS policy shape (getAppPolicy)."""
+        if "window" in p:
+            client = self.target(p["window"])  # Enforces the configured confinement.
+            app = self.client_app(client)
+            try:
+                self.trust.guard_auth_client(client)
+                decision = "allowed"
+            except RuntimeError:
+                decision = "forbidden"
+            terminal = self.terminal_client(client)
+            fallback = client.get("initialClass") or client.get("class") or "unknown"
+        elif "app" in p:
+            app = self.find_app(text(p["app"], "app", False))
+            decision, fallback = "allowed", app.get_id()
+            terminal = "TerminalEmulator" in (app.get_categories() or "").split(";")
+        else:
+            # Window-less Sky calls act on the whole desktop (or its clipboard).
+            return {"decision": "allowed", "allowPersistentApproval": True,
+                    "target": {"bundleIdentifier": "desktop", "displayName": "the desktop",
+                               "appPath": "", "risk": "high"}}
+        target = {"bundleIdentifier": app.get_id() if app else fallback,
+                  "displayName": app.get_display_name() if app else fallback,
+                  "appPath": (app.get_filename() or "") if app and hasattr(app, "get_filename") else "",
+                  "risk": "high" if terminal else "low"}
+        if terminal:
+            target["warningSubtitle"] = "This app can run commands on your computer."
+        return {"decision": decision, "allowPersistentApproval": True, "target": target}
 
     def launch_app(self, p):
         name = text(p.get("app"), "app", False)

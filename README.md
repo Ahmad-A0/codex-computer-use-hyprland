@@ -71,16 +71,21 @@ turn metadata that Codex attaches to MCP calls; a bare standalone MCP client
 without that metadata cannot validate browser connectivity. Custom trusted browser
 services and browser environment settings are preserved.
 
-A new provider process loads the built native module if needed after compositor
-restart. It compares build IDs before reusing a loaded module. Upgrades drain
-clipboard resources and refuse to unload while a transaction or client offer
-remains active. All native binaries compile before publication; shared objects
-are replaced atomically. The module checks the compositor/header ABI. Rebuild
-and validate after Hyprland upgrades; incompatible binaries are never forced in.
+The compositor plugin is cached per Hyprland plugin ABI in
+`build/native/<abi>/` (the ABI string is the one `hyprctl version` reports as
+`abiHash`). A new provider process loads the build for the running compositor,
+compiling it first if needed (about 20 seconds). After a Hyprland upgrade the
+running session keeps its old build; the new one is used after the next login.
+`./install` also enables a user `codex-hyprland-prebuild.path` unit that compiles
+for the new headers as soon as pacman installs them, so that login needs no build.
+A compile failure means Hyprland changed an internal API the plugin uses, which
+needs a provider update. Upgrades drain clipboard resources and refuse to unload
+while a transaction or client offer remains active. Shared objects are replaced
+atomically, and the module still checks the compositor ABI when loading.
 
 To unload safely, send `hyprctl codex-background '{"op":"drain"}'`, wait until
 `{"op":"status"}` reports `busy: false` and `offers: 0`, then run
-`hyprctl plugin unload "$PWD/build/codex-background.so"` in the intended session.
+`hyprctl plugin unload "$PWD/build/native/<abi>/codex-background.so"` in the intended session.
 Do not forcibly unload a module whose clipboard offers are still held by apps.
 
 ## API coverage
@@ -107,9 +112,10 @@ await app.getAXStateAndScreenshot();
 | App/window inventory | Gio desktop entries and Hyprland clients |
 | `getApp(string)` | Resolve name, inventory ID, or desktop-file path; launch in background when needed |
 | `getApp({windowId})` | Bind the exact mapped window with identity checks |
-| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable |
+| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set |
+| App approval | As on macOS, the first action on an app asks "Allow Computer Use to use X?" through a Codex elicitation; Codex remembers session/always answers |
 | Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture; coordinates follow the latest app screenshot |
-| Element click / secondary action | Exposed AT-SPI action or verified element bounds |
+| Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS |
 | Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland |
 | `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control |
 | `selectText` | Text match, prefix/suffix disambiguation, selection or before/after caret placement; verified result |
@@ -165,6 +171,12 @@ implementation of the documented pasteboard/clipboard-preservation contract.
 
 
 ## Remaining parity gaps
+
+The goal is macOS behaviour under the same calls. Approval decisions mirror the
+macOS `getAppPolicy` shape: system authentication dialogs are forbidden, terminal
+emulators are high risk, and `CODEX_HYPRLAND_CONFINE` refuses apps outside its scope.
+Set `CODEX_HYPRLAND_APP_APPROVAL=0` only for unattended runs, such as the
+disposable-app validation. macOS binds a whole app; `getApp` here binds one window.
 
 The previously missing rich paste, cross-window X11 drag, popup routing/capture,
 and identical-window binding paths are implemented. Platform-specific limits remain:
@@ -257,12 +269,15 @@ The October 1 audit verified that all 366 shipped CUA/Sky declaration files are
 unchanged in the overlay. A fresh official MCP provider exposed `js`,
 `js_add_node_module_dir`, `js_reset`, and `turn_ended`; native inventory through
 `cua.getState()` and `cua.listWindows()` reported 105 apps and 7 windows. Patched
-JavaScript files passed syntax checks. The updated GUI fixture run was blocked
-by the session's read-only `/run/user/1000` seat-lock directory, and an isolated
-compositor could not create a rendering backend. Current-bundle GUI parity is
-therefore not yet fully live-validated. The ignored
-`.artifacts/current-interface-live.mjs` preserves the bounded disposable-app run
-for validation from a desktop session with the required runtime permissions.
+JavaScript files passed syntax checks. A first GUI fixture run from the Codex
+sandbox was blocked by a read-only `/run/user/1000`; the run below, from a
+normal desktop session, completed.
+
+On October 1, 2026 the bounded `.artifacts/current-interface-live.mjs` run passed
+against a disposable GTK app through the official MCP `js` tool: app approval
+prompt, macOS-format diffs and no-change notices, element double-click, `setValue`
+(text and numeric), `selectText`, `paste`, page scroll, screenshots, and app reuse,
+with compositor focus, workspace and cursor unchanged.
 
 ## References
 

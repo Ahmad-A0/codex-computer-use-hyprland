@@ -39,7 +39,7 @@ def send(client, operation, **fields):
     try:
         response = json.loads(result)
     except ValueError:
-        raise RuntimeError('Background input module unavailable. Build with scripts/build-native.sh and load build/codex-background.so into the matching Hyprland session.') from None
+        raise RuntimeError('Background input module unavailable; restart the provider so it builds and loads the plugin for this Hyprland session.') from None
     if not response.get('ok'):
         raise RuntimeError(response.get('error', 'Background input failed'))
     return response
