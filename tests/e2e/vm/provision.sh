@@ -1,7 +1,8 @@
 #!/bin/sh
 # Guest side of the end-to-end VM, run as root: install what a user would on
-# Arch (Hyprland, the provider's prerequisites, test apps, ChatGPT/Codex) and
-# start a real Hyprland session for USER through tty1 autologin.
+# Arch (Hyprland, the provider's prerequisites, test apps, ChatGPT/Codex), set
+# up a Hyprland session for USER through tty1 autologin from the next boot, and
+# clean up so the disk can be cached.
 set -eu
 user=${1:-tester}
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -28,7 +29,8 @@ pacman -Su --noconfirm --needed --noprogressbar --ignore linux \
   hyprland xorg-xwayland mesa grim wl-clipboard uv \
   python-gobject at-spi2-core python-pillow \
   base-devel pkgconf json-c libxkbcommon libx11 libxi libxtst libxcomposite libxres libxfixes \
-  gtk3 python-pyqt6 chromium foot ttf-dejavu nodejs npm chatgpt-bin
+  gtk3 python-pyqt6 chromium foot ttf-dejavu nodejs npm chatgpt-bin \
+  gnome-text-editor mousepad featherpad gnome-calculator firefox xterm
 npm install -g --silent @openai/codex
 
 home=$(getent passwd "$user" | cut -d: -f6)
@@ -47,5 +49,8 @@ cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
 ExecStart=
 ExecStart=-/sbin/agetty -o '-p -f -- \\\\u' --noclear --autologin $user %I \$TERM
 EOF
-systemctl daemon-reload
-systemctl restart getty@tty1
+
+# No xdg-desktop-portal: GTK file choosers stay in-process.
+rm -rf /var/cache/pacman/pkg/* /root/.npm
+cloud-init clean --logs
+fstrim -a
