@@ -1,19 +1,24 @@
-"""Disposable GTK 3 app: entry, slider, button and a long document. Its state is
-written to a JSON file so tests check the app itself, not just observations.
-Usage: gtk.py STATE_JSON APP_ID (run with GDK_BACKEND=x11 for XWayland)."""
+"""Disposable GTK 3 app: entry, buttons, slider, a long document and a dialog.
+Its state (including every key it received) is written to a JSON file so tests
+check the app itself, not just observations.
+Usage: gtk.py STATE_JSON APP_ID [TITLE]   ("{pid}" in STATE_JSON is replaced;
+run with GDK_BACKEND=x11 for XWayland)."""
 import json
+import os
 import sys
 from pathlib import Path
 import gi
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk, GLib
+from gi.repository import Gtk, Gdk, GLib
 
-out, app_id = Path(sys.argv[1]), sys.argv[2]
+out = Path(sys.argv[1].replace('{pid}', str(os.getpid())))
+app_id = sys.argv[2]
+title = sys.argv[3] if len(sys.argv) > 3 else 'Codex E2E GTK'
 GLib.set_prgname(app_id)
-state = {'clicks': 0}
-window = Gtk.Window(title='Codex E2E GTK')
+state = {'clicks': 0, 'keys': [], 'dialog': None, 'dialogs': 0}
+window = Gtk.Window(title=title)
 window.set_wmclass(app_id, app_id)
-window.set_default_size(640, 700)
+window.set_default_size(640, 720)
 window.connect('destroy', Gtk.main_quit)
 box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 box.set_border_width(20)
@@ -23,6 +28,8 @@ entry.get_accessible().set_name('E2E entry')
 box.pack_start(entry, False, False, 0)
 button = Gtk.Button(label='E2E button')
 box.pack_start(button, False, False, 0)
+opener = Gtk.Button(label='Open dialog')
+box.pack_start(opener, False, False, 0)
 scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
 scale.get_accessible().set_name('E2E slider')
 box.pack_start(scale, False, False, 0)
@@ -48,10 +55,38 @@ def clicked(*_):
     save()
 
 
+def key(_, event):
+    state['keys'].append(Gdk.keyval_name(event.keyval))
+    save()
+    return False
+
+
+def open_dialog(*_):
+    # A separate toplevel owned by this app, as a Save or Preferences dialog is.
+    dialog = Gtk.Dialog(title='Codex E2E Dialog', transient_for=window)
+    field = Gtk.Entry()
+    field.get_accessible().set_name('Dialog entry')
+    dialog.get_content_area().pack_start(field, False, False, 12)
+    dialog.add_button('Dialog OK', Gtk.ResponseType.OK)
+
+    def respond(_, response):
+        if response == Gtk.ResponseType.OK:
+            state['dialog'] = field.get_text()
+        dialog.destroy()
+        save()
+
+    dialog.connect('response', respond)
+    dialog.show_all()
+    state['dialogs'] += 1
+    save()
+
+
 entry.connect('changed', save)
 entry.connect('notify::cursor-position', save)
 entry.connect('notify::selection-bound', save)
+window.connect('key-press-event', key)
 button.connect('clicked', clicked)
+opener.connect('clicked', open_dialog)
 scale.connect('value-changed', save)
 view.get_buffer().connect('changed', save)
 scroll.get_vadjustment().connect('value-changed', save)

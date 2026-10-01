@@ -804,7 +804,9 @@ class Backend:
             fallback = client.get("initialClass") or client.get("class") or "unknown"
         elif "app" in p:
             app = self.find_app(text(p["app"], "app", False))
-            decision, fallback = "allowed", app.get_id()
+            # Refuse authentication dialogs before launching or binding anything.
+            decision = "forbidden" if guards.protected(self.app_aliases(app)) else "allowed"
+            fallback = app.get_id()
             terminal = "TerminalEmulator" in (app.get_categories() or "").split(";")
         else:
             # Window-less Sky calls act on the whole desktop (or its clipboard).

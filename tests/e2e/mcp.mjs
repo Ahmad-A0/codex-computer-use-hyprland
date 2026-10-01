@@ -11,6 +11,7 @@ export class Provider {
     this.serial = 0;
     this.pending = new Map();
     this.elicitations = [];
+    this.decline = new Set(); // app IDs whose approval prompts are declined
     this.stderr = '';
     this.session = randomUUID();
     this.process = spawn(node, [launcher], { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
@@ -36,7 +37,9 @@ export class Provider {
       // Server requests share the id space with ours; only answer what we support.
       if (message.method === 'elicitation/create') {
         this.elicitations.push(message.params);
-        this.send({ jsonrpc: '2.0', id: message.id, result: { action: 'accept', content: {}, _meta: { persist: 'session' } } });
+        const declined = this.decline.has(message.params?._meta?.tool_params?.app);
+        this.send({ jsonrpc: '2.0', id: message.id, result: declined ? { action: 'decline' }
+          : { action: 'accept', content: {}, _meta: { persist: 'session' } } });
       } else {
         this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `Unsupported client request ${message.method}` } });
       }

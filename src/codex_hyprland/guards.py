@@ -18,6 +18,16 @@ def lock_path():
     return directory / 'seat.lock'
 
 
+# System authentication dialogs: never driven, like macOS's forbidden apps.
+AUTH_CLASSES = {'hyprpolkitagent', 'polkit-gnome-authentication-agent-1',
+                'org.kde.polkit-kde-authentication-agent-1', 'polkit-mate-authentication-agent-1',
+                'lxpolkit', 'lxqt-policykit-agent', 'xfce-polkit', 'gcr-prompter', 'org.gnome.keyring.prompt'}
+
+
+def protected(names):
+    return enabled('AUTH_GUARD', '1') and any(n.lower() in AUTH_CLASSES for n in names if n)
+
+
 class Guards:
     def __init__(self, accessibility):
         self.ax = accessibility
@@ -43,10 +53,7 @@ class Guards:
             raise RuntimeError('Target is outside the configured confinement scope')
 
     def guard_auth_client(self, client, allow_auth=False):
-        protected = {'hyprpolkitagent', 'polkit-gnome-authentication-agent-1',
-                     'org.kde.polkit-kde-authentication-agent-1', 'polkit-mate-authentication-agent-1',
-                     'lxpolkit', 'lxqt-policykit-agent', 'xfce-polkit', 'gcr-prompter', 'org.gnome.keyring.prompt'}
-        if not allow_auth and enabled('AUTH_GUARD', '1') and client.get('class', '').lower() in protected:
+        if not allow_auth and protected({client.get('class', '')}):
             raise RuntimeError('Input to a system authentication dialog is refused')
 
     def guard_password_field(self, client, allow_auth=False):
@@ -67,6 +74,10 @@ class Guards:
                 raise RuntimeError('Session is locked; unlock it before computer use')
 
     def guard_keyboard_layer(self, window_given=True, allow_auth=False):
+        # Window-bound input reaches its app directly, as on macOS, whatever
+        # layer holds keyboard focus. Only desktop input would land in a launcher.
+        if window_given:
+            return
         def visit(value):
             if isinstance(value, dict):
                 namespace = str(value.get('namespace', '')).lower()

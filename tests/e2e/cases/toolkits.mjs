@@ -1,0 +1,62 @@
+// Toolkits whose accessibility needs switches on Linux, and terminals.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { bind, clients, entry, expect, fixtures, hypr, js, out, python, state, statePath, until, which } from '../lib.mjs';
+
+if (python('PyQt6')) {
+  entry('codex-e2e-qt', 'Codex E2E Qt',
+    `/usr/bin/env QT_QPA_PLATFORM=wayland python3 ${join(fixtures, 'qt.py')} ${statePath('codex-e2e-qt')} codex-e2e-qt`,
+    'StartupWMClass=codex-e2e-qt\n');
+}
+const browser = which('chromium', 'google-chrome-stable');
+if (browser) {
+  entry('codex-e2e-browser', 'Codex E2E Browser', `${browser} --user-data-dir=${join(out, 'browser')} --no-first-run `
+    + `--no-default-browser-check --ozone-platform=wayland --app=file://${join(fixtures, 'page.html')}`);
+}
+const terminal = which('foot', 'kitty');
+if (terminal) {
+  const shell = 'bash --norc --noprofile';
+  entry('codex-e2e-terminal', 'Codex E2E Terminal', terminal === 'foot'
+    ? `foot --app-id=codex-e2e-terminal --title=Codex-E2E-Terminal ${shell}`
+    : `kitty --class codex-e2e-terminal --title Codex-E2E-Terminal -o confirm_os_window_close=0 ${shell}`,
+  'StartupWMClass=codex-e2e-terminal\nCategories=System;TerminalEmulator;\n');
+}
+
+export default function (test) {
+  test('Qt: accessibility tree, setValue, click', async () => {
+    await bind('qt', 'codex-e2e-qt.desktop', { timeout: 30000 });
+    await js(`await qt.setValue(await e2eFind(qt, "Qt entry", "text"), "qt value");`);
+    await until(() => state('codex-e2e-qt').text === 'qt value', 'Qt entry text');
+    await js(`await qt.click(await e2eFind(qt, "Qt button", "button")); await qt.getAXState({ emit: false });`);
+    await until(() => state('codex-e2e-qt').clicks === 1, 'Qt button click');
+  }, { needs: python('PyQt6') ? null : 'PyQt6 not installed' });
+
+  test('Chromium: silent launch, accessibility tree, typing, click', async () => {
+    // Chromium names --app windows after the page, so use the documented Linux
+    // flow: launch_app, then bind the new window found by title. Chromium also
+    // clears its environment, which once defeated Hyprland's launch rule.
+    const window = () => clients().find((c) => c.title.startsWith('Codex E2E Page'));
+    await js(`await cua.computer.launch_app({ app: "codex-e2e-browser.desktop" });`);
+    await until(() => Boolean(window()), 'browser window', 30000);
+    expect(window().workspace.name === 'codex', `browser opened on workspace ${window().workspace.name}`);
+    expect(!hypr('activewindow').title?.startsWith('Codex E2E Page'), 'the browser took focus');
+    await js(`globalThis.page = await cua.getApp({ windowId: ${parseInt(window().address, 16)} });`);
+    await js(`const i = await e2eFind(page, "Page input", "entry"); await page.click(i); await page.typeText("from codex");
+      await page.getAXState({ emit: false });`);
+    await until(() => window().title.startsWith('Codex E2E Page|from codex|'), 'page input', 8000);
+    await js(`await page.click(await e2eFind(page, "Page button", "button")); await page.getAXState({ emit: false });`);
+    await until(() => window().title.endsWith('|1'), 'page button click', 8000);
+  }, { needs: browser ? null : 'no Chromium-based browser' });
+
+  test('Terminal: typing and the terminal paste shortcut', async () => {
+    const typed = join(out, 'terminal-typed.txt');
+    const pasted = join(out, 'terminal-pasted.txt');
+    await bind('term', 'codex-e2e-terminal.desktop', { timeout: 30000 });
+    await js(`await term.typeText(${JSON.stringify(`printf typed-ok > ${typed}`)}); await term.pressKey("Return");
+      await term.getScreenshot({ emit: false });`);
+    await until(() => readFileSync(typed, 'utf8') === 'typed-ok', 'typed command ran');
+    await js(`await term.paste(${JSON.stringify(`printf pasted-ok > ${pasted}`)}); await term.pressKey("Return");
+      await term.getScreenshot({ emit: false });`);
+    await until(() => readFileSync(pasted, 'utf8') === 'pasted-ok', 'pasted command ran');
+  }, { needs: terminal ? null : 'no foot or kitty' });
+}
