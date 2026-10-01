@@ -209,6 +209,8 @@ Background captures temporarily resume the target's rendering and service its
 frame callbacks, including subsurfaces and owned popups. They restore suspension
 after capture; abandoned capture leases expire automatically. Window visibility,
 workspace selection, compositor focus and the physical cursor are unchanged.
+Hyprland copies a toplevel only while it overlaps the monitor of its workspace;
+a window lying entirely outside it gets an immediate capture error instead of a hang.
 Long typing batches give the client bounded opportunities to process input and
 render between chunks. Applications without AT-SPI still require screenshots;
 this does not synthesize a terminal accessibility tree.
@@ -221,7 +223,10 @@ another workspace (for example `special:codex` or `3`), and `current` opens it o
 your current workspace. Windows the app opens later (dialogs, further windows,
 X11 menus) follow it as on macOS: they map directly on the workspace of their
 parent window (wherever you have since moved it), or of the app's other windows,
-without taking focus and without appearing on your workspace first. The launcher
+without taking focus and without appearing on your workspace first. Launched
+windows float; Hyprland floats an X11 window that chose no position at the X origin,
+which may be another monitor than its workspace's, so such a window is moved onto
+its workspace's monitor (centred on its parent there, else in the work area). The launcher
 registers the app's process with the compositor module and marks its environment;
 only such processes, their children and windows parented to theirs are affected,
 never your own apps. While you are using the app (one of its windows is focused on

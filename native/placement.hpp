@@ -13,6 +13,8 @@ struct App {pid_t pid;unsigned long long start;std::string workspace;};
 inline std::vector<App> apps;
 inline CFunctionHook* hook=nullptr;
 inline uint64_t placed=0;  // diagnostic: windows placed so far (status)
+inline std::vector<PHLWINDOWREF> mapping;  // placed windows whose map has not finished
+inline CHyprSignalListener mapped;
 // /proc/<pid>/stat: parent PID and start time, or {0,0} once the process is gone.
 inline std::pair<pid_t,unsigned long long> stat(pid_t pid){
     std::ifstream file("/proc/"+std::to_string(pid)+"/stat");std::string line;
@@ -75,7 +77,34 @@ inline void place(Desktop::Rule::CWindowRuleApplicator* rules){
     if(!workspace.empty() && validWorkspace(workspace))rules->static_.workspace=workspace+" silent";
     rules->static_.noInitialFocus=true;
     rules->focusOnActivate().set(false,Desktop::Types::PRIORITY_WINDOW_RULE);
+    std::erase_if(mapping,[](const PHLWINDOWREF& w){return !w;});
+    if(mapping.size()<256 && std::ranges::none_of(mapping,[&](const PHLWINDOWREF& w){return w.lock()==window;}))mapping.emplace_back(window);
     ++placed;
+}
+// Hyprland floats an X11 window at the position it asked for, converted from X
+// coordinates without regard to its workspace: a window at the X origin lands on
+// whichever monitor holds that X position, though its workspace is on another.
+// It is then invisible there, and its toplevel capture never completes, because
+// Hyprland copies a window only on commits of its own monitor while overlapping it.
+// Once mapped, bring such a window onto its workspace's monitor, centred on its
+// parent when that is there, else in the work area, as Hyprland places others.
+inline void settle(PHLWINDOW window){
+    auto it=std::ranges::find_if(mapping,[&](const PHLWINDOWREF& w){return w.lock()==window;});
+    if(it==mapping.end())return;
+    mapping.erase(it);
+    if(!window->m_isMapped || !window->m_isFloating || window->isX11OverrideRedirect() || !window->m_workspace)return;
+    auto monitor=window->m_workspace->m_monitor.lock();if(!monitor)return;
+    auto size=window->size(Desktop::View::IGeometric::GEOMETRIC_GOAL);
+    CBox box{window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL),size};
+    if(!box.intersection(monitor->logicalBox()).empty())return;
+    auto target=window->layoutTarget();if(!target)return;
+    auto center=monitor->logicalBox().middle();
+    if(auto space=target->space())center=space->workArea(true).middle();
+    if(auto parent=window->parent(); parent && parent->m_workspace==window->m_workspace){
+        CBox parentBox{parent->position(Desktop::View::IGeometric::GEOMETRIC_GOAL),parent->size(Desktop::View::IGeometric::GEOMETRIC_GOAL)};
+        if(!parentBox.intersection(monitor->logicalBox()).empty())center=parentBox.middle();
+    }
+    target->setPositionGlobal(CBox{center-size/2.F,size});
 }
 inline bool readStaticRules(Desktop::Rule::CWindowRuleApplicator* rules,bool preRead){
     auto result=reinterpret_cast<bool(*)(Desktop::Rule::CWindowRuleApplicator*,bool)>(hook->m_original)(rules,preRead);
@@ -95,6 +124,7 @@ inline void setup(HANDLE plugin){
     require(matches.size()==1,"Cannot locate window rule entry point");
     hook=HyprlandAPI::createFunctionHook(plugin,matches[0].address,reinterpret_cast<void*>(readStaticRules));
     require(hook && hook->hook(),"Cannot install launch placement");
+    mapped=Event::bus()->m_events.window.openLate.listen([](PHLWINDOW window){try{settle(window);}catch(const std::exception&){}});
 }
-inline void clear(){if(hook){hook->unhook();hook=nullptr;}apps.clear();}
+inline void clear(){mapped.reset();if(hook){hook->unhook();hook=nullptr;}apps.clear();mapping.clear();}
 }

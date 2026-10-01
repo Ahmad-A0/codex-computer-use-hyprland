@@ -63,18 +63,26 @@ def capture(client):
     stable = client.get('stableId')
     if not stable:
         raise RuntimeError('Hyprland does not expose the stable toplevel ID needed for background capture')
-    with refreshing(client):
-        return subprocess.run(['grim', '-T', stable, '-s', '1', '-t', 'png', '-'], check=True, capture_output=True, timeout=15).stdout
+    with refreshing(client) as lease:
+        # Hyprland never completes a toplevel capture of a window lying outside
+        # its own monitor; say so instead of waiting for grim's timeout.
+        if lease.get('copyable') is False:
+            raise RuntimeError('Hyprland cannot capture this window: it lies outside the monitor of its workspace. '
+                               'Move it onto that monitor to take screenshots.')
+        try:
+            return subprocess.run(['grim', '-T', stable, '-s', '1', '-t', 'png', '-'], check=True, capture_output=True, timeout=15).stdout
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('Hyprland did not deliver a capture of this window within 15 seconds') from None
 
 
 @contextlib.contextmanager
 def refreshing(client):
-    token = send(client, 'refresh_begin')['token']
+    lease = send(client, 'refresh_begin')
     try:
         settle(client)
-        yield
+        yield lease
     finally:
-        send(client, 'refresh_end', token=token)
+        send(client, 'refresh_end', token=lease['token'])
 
 
 def settle(client):

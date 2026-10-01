@@ -11,11 +11,18 @@ inline void release(uint64_t token){
     for(auto& [_,lease]:leases)if(lease.window.lock()==window)return;
     window->setSuspended(window->isHidden() || !window->m_workspace || !window->m_workspace->m_visible);
 }
+// Hyprland's toplevel capture (ext-image-copy-capture) copies a window only when
+// its own monitor commits and the window overlaps that monitor; otherwise the
+// frame never completes. Report it so the caller fails clearly instead of waiting.
+inline bool copyable(PHLWINDOW window){
+    auto monitor=window->m_monitor.lock();
+    return monitor && !window->getWindowMainSurfaceBox().intersection({monitor->m_position,monitor->m_size}).empty();
+}
 inline std::string begin(PHLWINDOW window){
     require(leases.size()<64,"Too many concurrent capture requests");
     auto token=++serial;leases.emplace(token,Lease{window,now()+5000});
     window->setSuspended(false);
-    return "{\"ok\":true,\"token\":"+std::to_string(token)+"}";
+    return "{\"ok\":true,\"token\":"+std::to_string(token)+",\"copyable\":"+(copyable(window)?"true":"false")+"}";
 }
 inline void setup(){
     watchdog=wl_event_loop_add_timer(wl_display_get_event_loop(g_pCompositor->m_wlDisplay),[](void*){
