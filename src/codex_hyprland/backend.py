@@ -830,15 +830,17 @@ class Backend:
         status = Path(self.directory.name) / ('launch-' + uuid.uuid4().hex + '.json')
         with self.seat():
             env = {k: os.environ[k] for k in ("XDG_DATA_HOME", "XDG_DATA_DIRS", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY") if k in os.environ}
-            env.update(LAUNCH_ENVIRONMENT)
-            command = shlex.join(["env", *(f"{k}={v}" for k, v in env.items()), sys.executable,
-                                  "-m", "codex_hyprland.launch", matches[0].get_id(), str(status)])
             # Like a macOS background launch, a new app must not disturb the user's
             # layout: by default it opens silently on the "codex" workspace.
             # CODEX_HYPRLAND_LAUNCH_WORKSPACE=current keeps the current workspace.
             workspace = guards.setting("LAUNCH_WORKSPACE", "name:codex").strip()
-            if any(c in workspace for c in ";[]\n"):
+            if any(c in workspace for c in ";[]\n") or len(workspace) > 255:
                 raise ValueError("Invalid CODEX_HYPRLAND_LAUNCH_WORKSPACE")
+            env.update(LAUNCH_ENVIRONMENT)
+            # The app's later windows follow it there too (compositor module).
+            env["CODEX_HYPRLAND_PLACEMENT"] = workspace or "current"
+            command = shlex.join(["env", *(f"{k}={v}" for k, v in env.items()), sys.executable,
+                                  "-m", "codex_hyprland.launch", matches[0].get_id(), str(status)])
             placement = "" if workspace in ("", "current") else f"workspace {workspace} silent; "
             command = f"[{placement}no_initial_focus on; focus_on_activate off] " + command
             if self.hypr.provider() == self.hypr.LUA:

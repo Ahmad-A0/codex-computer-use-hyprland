@@ -151,7 +151,9 @@ while a handle is pressed; physical button input or 10 idle minutes cancel it.
 `clipboard_read` sends the app's Copy shortcut (terminal-aware, like paste). On
 Wayland the module keeps that client's new selection private, reads every
 offered format through a pipe and cancels it, so the desktop clipboard never
-changes. On XWayland the helper snapshots the previous formats, captures every
+changes. X selection requests that some toolkits also list as formats
+(`SAVE_TARGETS`, `TARGETS`, `MULTIPLE`, `DELETE`, ...) are not data and are not
+requested; GTK 3 never answers `SAVE_TARGETS`. On XWayland the helper snapshots the previous formats, captures every
 format the app's new selection offers, and restores the previous contents (which
 moves ownership to the helper, as paste does). Snapshots stay in the provider
 (64 MiB each, 32 handles, 256 MiB in total) and paste byte-exact into any
@@ -191,7 +193,14 @@ its initial window. Like a macOS background launch, a new app opens without focu
 and silently on the `codex` workspace, leaving your layout untouched; switch to
 that workspace to watch or use it. `CODEX_HYPRLAND_LAUNCH_WORKSPACE` selects
 another workspace (for example `special:codex` or `3`), and `current` opens it on
-your current workspace. `launch_app` acknowledges desktop launch success or failure;
+your current workspace. Windows the app opens later (dialogs, further windows,
+X11 menus) follow it as on macOS: they map directly on the workspace of their
+parent window (wherever you have since moved it), or of the app's other windows,
+without taking focus and without appearing on your workspace first. The launcher
+registers the app's process with the compositor module and marks its environment;
+only such processes, their children and windows parented to theirs are affected,
+never your own apps. While you are using the app (one of its windows is focused on
+that workspace), its new windows open normally. `launch_app` acknowledges desktop launch success or failure;
 it does not promise a new window. Use normal app UI actions to create additional
 windows, and compare inventories before treating a window as disposable.
 
