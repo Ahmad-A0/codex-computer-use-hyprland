@@ -24,7 +24,7 @@ function blocked(program, id, bus) {
 
 const apps = [
   ['codex-e2e-texteditor', 'GNOME Text Editor', 'gnome-text-editor', `${isolated} gnome-text-editor --standalone`, 'org.gnome.TextEditor'],
-  ['codex-e2e-mousepad', 'Mousepad', 'mousepad', `${isolated} mousepad --disable-server`, 'mousepad', null],
+  ['codex-e2e-mousepad', 'Mousepad', 'mousepad', `${isolated} mousepad --disable-server`, 'org.xfce.mousepad', null],
   ['codex-e2e-calculator', 'GNOME Calculator', 'gnome-calculator', `${isolated} gnome-calculator --mode=basic`, 'org.gnome.Calculator'],
 ];
 for (const [id, name, , exec, wmclass] of apps) entry(id, name, exec, `StartupWMClass=${wmclass}\n`);
