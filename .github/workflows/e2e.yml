@@ -2,7 +2,7 @@ name: e2e
 # Runs ./test: a disposable Arch Linux + Hyprland VM, installed as a user would.
 on:
   push:
-    branches: [main, e2e-vm]  # TEMP: e2e-vm while iterating
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
