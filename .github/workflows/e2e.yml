@@ -1,0 +1,48 @@
+name: e2e
+# Runs ./test: a disposable Arch Linux + Hyprland VM, installed as a user would.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: Test name regex (E2E_ONLY)
+        required: false
+  workflow_call:
+    inputs:
+      only:
+        type: string
+        required: false
+    outputs:
+      versions:
+        description: Versions installed in the guest (chatgpt-bin, hyprland, @oai/cua, @oai/sky), as JSON
+        value: ${{ jobs.vm.outputs.versions }}
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      versions: ${{ steps.versions.outputs.json }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/e2e-vm-host
+      - run: ./test
+        env:
+          E2E_ONLY: ${{ inputs.only }}
+      - uses: ./.github/actions/e2e-vm-host
+        if: always()
+        with:
+          save: 'true'
+      - id: versions
+        if: always()
+        run: echo "json=$(cat e2e-artifacts/versions.json 2>/dev/null || echo '{}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-artifacts
+          path: e2e-artifacts
+          if-no-files-found: ignore
