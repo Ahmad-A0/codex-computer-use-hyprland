@@ -27,7 +27,7 @@ pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring
 pacman -Su --noconfirm --needed --noprogressbar --ignore linux \
   hyprland xorg-xwayland mesa grim wl-clipboard uv \
   python-gobject at-spi2-core python-pillow \
-  base-devel pkgconf json-c libxkbcommon libx11 libxi libxtst libxcomposite libxres \
+  base-devel pkgconf json-c libxkbcommon libx11 libxi libxtst libxcomposite libxres libxfixes \
   gtk3 python-pyqt6 chromium foot ttf-dejavu nodejs npm chatgpt-bin
 npm install -g --silent @openai/codex
 
