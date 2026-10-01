@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>Codex E2E Page</title>
+<!-- Disposable page: state is mirrored into the window title, which tests read
+     from Hyprland, so results come from the browser itself. -->
+<style>body{font:18px sans-serif;padding:24px}input{font:inherit;width:80%}</style>
+<h1>Codex E2E Page</h1>
+<label>Page input <input id="field" aria-label="Page input"></label>
+<p><button id="go">Page button</button></p>
+<script>
+let clicks=0;
+const sync=()=>{document.title=`Codex E2E Page|${field.value}|${clicks}`;};
+field.addEventListener('input',sync);
+go.addEventListener('click',()=>{clicks++;sync();});
+</script>

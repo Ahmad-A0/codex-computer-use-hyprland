@@ -1,0 +1,14 @@
+#!/bin/sh
+# End-to-end tests against real apps through the official cua_repl server.
+#   ./test          boot a disposable Arch VM with Hyprland, install, run the suite
+#   ./test --host   run the suite in the current Hyprland session (apps open
+#                   silently on the "codex" workspace; your windows are untouched)
+# E2E_ONLY=<regex> selects tests; E2E_OUT=<dir> keeps results and logs.
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$project_dir"
+if [ "${1:-}" = --host ]; then
+  . "$project_dir/scripts/runtime.sh"
+  exec "$CODEX_CUA_RUNTIME/bin/node" tests/e2e/suite.mjs
+fi
+exec tests/e2e/vm/run.sh "$@"
