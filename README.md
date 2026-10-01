@@ -112,10 +112,10 @@ await app.getAXStateAndScreenshot();
 | App/window inventory | Gio desktop entries and Hyprland clients |
 | `getApp(string)` | Resolve name, inventory ID, or desktop-file path; launch in background when needed |
 | `getApp({windowId})` | Bind the exact mapped window with identity checks |
-| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set |
+| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set. Open context menus and popup menus of the window are part of its tree (see below) |
 | App approval | As on macOS, the first action on an app asks "Allow Computer Use to use X?" through a Codex elicitation; Codex remembers session/always answers |
-| Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture; coordinates follow the latest app screenshot |
-| Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS |
+| Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture, also for windows on hidden workspaces; coordinates follow the latest app screenshot |
+| Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS. Items of an open popup menu are clicked at their centre, so the menu closes as a user's click closes it |
 | Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland |
 | `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control. macOS key names work: `cmd`/`command` is Ctrl and `option` is Alt; `super` stays Super |
 | `selectText` | Text match, prefix/suffix disambiguation, selection or before/after caret placement; verified result |
@@ -256,7 +256,24 @@ suppressed during the operation. Explicit user focus actions remain available.
 App screenshots composite owned popup surfaces without sampling unrelated desktop
 pixels. Coordinate input translates the latest screenshot origin, including
 negative popup offsets; accessibility-only observations retain that mapping.
-X11 popups must have a verifiable transient-parent chain to the target window.
+X11 popups must have a verifiable transient-parent chain to the target window;
+a popup belongs to the nearest managed window in that chain (a dialog's menu is
+the dialog's). Hidden-workspace popups are rendered directly from their surfaces,
+because Hyprland's own popup snapshot skips windows it is not drawing.
+
+As on macOS, an open menu is part of its window's accessibility tree: its items
+get element IDs, can be clicked or given secondary actions by index, and diffs
+show the menu appear and disappear. Toolkits expose menus differently: GTK 3 and
+Chromium list them as separate application children, Qt announces its popups
+only through AT-SPI showing events, GTK 4 keeps popovers in the window's tree
+(an entry's context menu is reached through focus events) and names menu items
+through labelled-by relations. The provider listens for those events from
+startup and attaches a showing popup only when the compositor (or the X11
+transient chain) shows a popup of the same size on the bound window and on no
+other window of the app, so other windows' menus never enter the tree. Menus are
+the window's last children. Qt on Wayland ignores a second right-click at
+exactly the same point after its context menu closed. An event-only menu (Qt,
+a GTK 4 entry's) opened before the provider started appears once it is reopened.
 
 Sky audio recording is not implemented; `drag` still takes a two-point path.
 Provider-owned input guards enforce confinement and authentication checks. Input remains serialized under the seat lock;

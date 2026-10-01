@@ -5,7 +5,7 @@
 // Output (results.json, provider.log) goes to $E2E_OUT, default a temporary directory.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { clients, ours, out, provider, seat, seatViolation } from './lib.mjs';
+import { clients, helpers, js, ours, out, provider, seat, seatViolation } from './lib.mjs';
 import basics from './cases/basics.mjs';
 import gtk from './cases/gtk.mjs';
 import windows from './cases/windows.mjs';
@@ -22,6 +22,8 @@ const results = [];
 let failed = 0;
 try {
   await provider.start();
+  // Test helpers exist in the REPL even when E2E_ONLY skips the test defining them.
+  if (only) await js(helpers);
   for (const t of tests) {
     // Setup always runs; the rest can be filtered with E2E_ONLY.
     if (only && !t.setup && !only.test(t.name)) continue;

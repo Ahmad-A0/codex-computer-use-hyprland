@@ -128,6 +128,51 @@ export async function bind(variable, app, options) {
   await js(`globalThis.${variable} = await cua.getApp(${JSON.stringify(app)});`, options);
 }
 
+/**
+ * macOS context-menu behavior through the public API: right-clicking an element
+ * opens its menu, the menu's items appear in getAXState (the diff adds them),
+ * screenshots show it, and an item is chosen by index, closing the menu (the
+ * diff removes it). With reopen, the menu is opened again and closed by Escape.
+ * Escape always runs on failure so no menu stays open for later tests.
+ */
+export async function contextMenu(app, target, role, item, { reopen = false } = {}) {
+  const text = await js(`const i = await e2eFind(${app}, ${JSON.stringify(target)}, ${JSON.stringify(role)});
+    const result = {};
+    const closedShot = await ${app}.getScreenshot({ emit: false });
+    await ${app}.getAXState({ emit: false }); // the diff baseline
+    await ${app}.click(i, { mouseButton: "right" });
+    try {
+      result.opened = await ${app}.getAXState({ emit: false });
+      const openShot = await ${app}.getScreenshot({ emit: false });
+      result.shotChanged = Buffer.compare(Buffer.from(closedShot), Buffer.from(openShot)) !== 0;
+      const full = await ${app}.getAXState({ emit: false, disableDiffing: true });
+      await ${app}.click(e2eIndex(full, ${JSON.stringify(item)})); // menu items are listed by name alone
+      result.chosen = await ${app}.getAXState({ emit: false });
+      if (${reopen}) {
+        await ${app}.click(i, { mouseButton: "right" });
+        result.reopened = await ${app}.getAXState({ emit: false, disableDiffing: true });
+        await ${app}.pressKey("Escape");
+        result.escaped = await ${app}.getAXState({ emit: false });
+      }
+    } catch (error) {
+      await ${app}.pressKey("Escape");
+      throw error;
+    }
+    await nodeRepl.write(JSON.stringify(result));`);
+  const result = JSON.parse(text.slice(text.indexOf('{"opened"')));
+  writeFileSync(join(out, `menu-${app}.json`), JSON.stringify(result, null, 2)); // evidence for failures
+  const added = (diff) => diff.split('\n').some((l) => l.startsWith('+\t') && l.includes(item));
+  const removed = (diff) => diff.includes('Removed element IDs') && !diff.includes(item);
+  expect(added(result.opened), `menu items were not added to the tree:\n${result.opened}`);
+  expect(result.shotChanged, 'the screenshot did not change while the menu was open');
+  expect(removed(result.chosen), `the chosen menu did not close in the tree:\n${result.chosen}`);
+  if (reopen) {
+    expect(result.reopened.includes(item), `the reopened menu is missing:\n${result.reopened}`);
+    expect(removed(result.escaped), `Escape did not remove the menu from the tree:\n${result.escaped}`);
+  }
+  return result;
+}
+
 export const seat = () => JSON.stringify([hypr('activewindow').address, hypr('activeworkspace').id, hypr('cursorpos')]);
 /** Background control must never move focus, switch workspaces or move the pointer. */
 export function seatViolation(before) {

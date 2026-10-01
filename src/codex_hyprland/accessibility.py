@@ -5,12 +5,24 @@ origin. Never guess between several windows belonging to the same process.
 """
 from __future__ import annotations
 
+import collections
+import threading
 import time
 
 
 # Toolkit switches for apps we launch: Chromium/Electron, Qt, and GTK/Firefox.
 LAUNCH_ENVIRONMENT = {"ACCESSIBILITY_ENABLED": "1", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
                       "GNOME_ACCESSIBILITY": "1"}
+
+
+# Roles whose unnamed instances take their name from a labelled-by target, as
+# GTK 4 menu items do (their label is a separate, otherwise hidden object).
+LABELLED_ROLES = ("menu item", "check menu item", "radio menu item")
+# Popup roots that some toolkits announce only through events: Qt lists no
+# Qt::Popup window among the application's children, and a GTK 4 entry's
+# context menu hangs below an object its entry does not list as a child.
+POPUP_EVENT_ROLES = ("popup menu", "menu", "window")
+MENU_ROLES = ("popup menu", "menu")
 
 
 def enable_session_accessibility():
@@ -37,40 +49,248 @@ class Accessibility:
         self.elements = {}
         self.roots = {}
         self.probe_context = probe_context
+        # Per window: identities of attached popup roots and, per element in
+        # them, the popup's window-relative origin and scale (None if unknown).
+        self.popup_roots = {}
+        self.offsets = {}
+        # Popup roots announced by showing events, by process. Toolkits emit
+        # these only while some client listens, so listen from the start.
+        self.announced = {}
+        self.watched = set()
+        self.pending = collections.deque(maxlen=2048)
+        # Requests hold this lock; between them a thread keeps draining events
+        # so an idle provider does not accumulate the desktop's event stream.
+        self.lock = threading.RLock()
+        self.draining = None
+        self.listed = (None, None)
+        try:
+            self.listener = Atspi.EventListener.new(self.on_event)
+            self.listener.register("object:state-changed:showing")
+            self.listener.register("object:state-changed:focused")
+        except Exception:
+            self.listener = None
 
     @staticmethod
     def identity(obj):
         return f"atspi:{obj.get_process_id()}:{obj.path}"
 
-    def root(self, client):
+    def name(self, obj, role):
+        name = obj.get_name() or ""
+        if name or role not in LABELLED_ROLES:
+            return name
+        labels = []
+        try:
+            for relation in obj.get_relation_set():
+                if relation.get_relation_type() != self.api.RelationType.LABELLED_BY:
+                    continue
+                for i in range(relation.get_n_targets()):
+                    target = relation.get_target(i)
+                    if target is None:
+                        continue
+                    label = target.get_name() or ""
+                    if not label and target.is_text():
+                        label = self.api.Text.get_text(target, 0, min(target.get_character_count(), 400))
+                    if label:
+                        labels.append(label)
+        except Exception:
+            return name
+        return " ".join(labels)
+
+    def on_event(self, event):
+        # Runs while the main context is iterated; snapshot() does the work.
+        self.pending.append((event.type.endswith("focused"), event.detail1, event.source))
+
+    def dispatch_events(self):
+        from gi.repository import GLib
+        context = GLib.MainContext.default()
+        for _ in range(4096):
+            if not context.iteration(False):
+                break
+
+    def drain_in_background(self):
+        """Dispatch AT-SPI events between requests (callers hold self.lock during requests)."""
+        if self.listener is None or self.draining is not None:
+            return
+
+        def drain():
+            while True:
+                time.sleep(.5)
+                with self.lock:
+                    self.dispatch_events()
+        self.draining = threading.Thread(target=drain, name="atspi-events", daemon=True)
+        self.draining.start()
+
+    def menu_root(self, obj):
+        """The outermost menu containing a focused menu item."""
+        found = None
+        for _ in range(32):
+            obj = obj.get_parent()
+            if obj is None:
+                break
+            role = obj.get_role_name()
+            if role in MENU_ROLES:
+                found = obj
+            elif role in ("application", "frame", "dialog", "window", "filler"):
+                break
+        return found
+
+    def pump(self):
+        """Dispatch queued AT-SPI events and remember announced popup roots."""
+        if self.listener is None:
+            return
+        with self.lock:
+            self.dispatch_events()
+            pending = list(self.pending)
+            self.pending.clear()
+        for focus, shown, obj in pending:
+            try:
+                pid = obj.get_process_id()
+                if pid not in self.watched:
+                    continue
+                known = self.announced.setdefault(pid, {})
+                if focus:
+                    # A menu opened by the pointer focuses its first item.
+                    if not shown or obj.get_role_name() not in LABELLED_ROLES:
+                        continue
+                    obj = self.menu_root(obj)
+                    if obj is None:
+                        continue
+                elif not shown:
+                    known.pop(self.identity(obj), None)
+                    continue
+                elif obj.get_role_name() not in POPUP_EVENT_ROLES or obj.get_index_in_parent() >= 0:
+                    continue  # Listed roots are found among the application's children.
+                known[self.identity(obj)] = obj
+                while len(known) > 32:
+                    known.pop(next(iter(known)))
+            except Exception:
+                continue
+
+    def application_children(self, pid):
         desktop = self.api.get_desktop(0)
         if desktop is None:
             return None
         desktop.clear_cache()
-        frames = []
+        children = []
         for i in range(desktop.get_child_count()):
             app = desktop.get_child_at_index(i)
             if app is None:
                 continue
             app.clear_cache()
-            if app.get_process_id() != client["pid"]:
+            if app.get_process_id() != pid:
                 continue
             for j in range(app.get_child_count()):
-                frame = app.get_child_at_index(j)
-                if frame is None:
+                child = app.get_child_at_index(j)
+                if child is None:
                     continue
-                frame.clear_cache()
-                if frame.get_state_set().contains(self.api.StateType.DEFUNCT):
+                child.clear_cache()
+                if not child.get_state_set().contains(self.api.StateType.DEFUNCT):
+                    children.append(child)
+        return children
+
+    @staticmethod
+    def popup_geometry(client):
+        """Mapped popup surfaces of this window, relative to it (compositor view)."""
+        from . import background
+        try:
+            return background.send(client, "popup_list")["popups"]
+        except Exception:
+            return []
+
+    def popup_match(self, obj, popups, client):
+        """Popups whose size matches this accessible's window extents."""
+        rect = obj.get_extents(self.api.CoordType.WINDOW)
+        if rect.width <= 0 or rect.height <= 0:
+            return []
+        keys = ("raw_w", "raw_h") if client.get("xwayland") else ("w", "h")
+        return [p for p in popups if abs(p[keys[0]] - rect.width) <= 1 and abs(p[keys[1]] - rect.height) <= 1]
+
+    def popups(self, client, root):
+        """Showing menus and other popups that belong to this window.
+
+        Like a macOS menu, they are observed as part of the window. A popup is
+        accepted only when the compositor (or the X11 transient chain) shows a
+        popup of the same size on this window and on no other window of the app.
+        Returns [(accessible, origin)]: origin is the popup's window-relative
+        (x, y, scale) when its elements report surface-relative extents, None
+        when that position is ambiguous, or False when they already report
+        window-relative extents.
+        """
+        pid = client["pid"]
+        root_id = self.identity(root)
+        candidates = {}
+        listed = self.listed[1] if self.listed[0] == pid else self.application_children(pid)
+        for child in listed or []:
+            if self.identity(child) != root_id:
+                candidates[self.identity(child)] = child
+        for ident, obj in list(self.announced.get(pid, {}).items()):
+            candidates.setdefault(ident, obj)
+        showing = []
+        for ident, obj in candidates.items():
+            try:
+                obj.clear_cache()
+                states = obj.get_state_set()
+                if states.contains(self.api.StateType.DEFUNCT) or not states.contains(self.api.StateType.SHOWING):
                     continue
-                # Direct application children are toplevels; Qt reports a plain
-                # QWidget window as "filler".
-                if frame.get_role_name() in ("frame", "window", "dialog", "alert", "filler"):
-                    frames.append(frame)
+                showing.append(obj)
+            except Exception:
+                self.announced.get(pid, {}).pop(ident, None)
+        if not showing:
+            return []
+        popups = self.popup_geometry(client)
+        if not popups:
+            return []
+        others = None
+        found = []
+        for obj in showing:
+            matches = self.popup_match(obj, popups, client)
+            if not matches:
+                continue
+            if others is None:
+                from . import desktop
+                others = [p for c in desktop.query("clients")
+                          if c.get("pid") == pid and c.get("address") != client["address"] and c.get("mapped", True)
+                          for p in self.popup_geometry(c)]
+            if self.popup_match(obj, others, client):
+                continue  # Another window of this app shows a popup like it.
+            if len(matches) > 1:
+                # Toolkits that report popup positions relative to their
+                # toplevel (Qt, X11) disambiguate same-sized popups.
+                screen = obj.get_extents(self.api.CoordType.SCREEN)
+                base = root.get_extents(self.api.CoordType.SCREEN) if client.get("xwayland") else None
+
+                def near(p):
+                    scale = p.get("scale", 1) or 1
+                    x, y = (screen.x, screen.y) if base is None else ((screen.x - base.x) / scale, (screen.y - base.y) / scale)
+                    return abs(p["x"] - x) <= 2 and abs(p["y"] - y) <= 2
+                matches = [p for p in matches if near(p)]
+            origin = obj.get_extents(self.api.CoordType.WINDOW)
+            if (origin.x, origin.y) != (0, 0):
+                # GTK 4 reports popover content in its toplevel's coordinates.
+                found.append((obj, False))
+                continue
+            popup = matches[0] if len(matches) == 1 else None
+            found.append((obj, None if popup is None else (popup["x"], popup["y"], popup.get("scale", 1) or 1)))
+        return found
+
+    def root(self, client):
+        children = self.application_children(client["pid"])
+        self.listed = (client["pid"], children)  # reused by popups() in the same snapshot
+        if children is None:
+            return None
+        # Direct application children are toplevels; Qt reports a plain QWidget
+        # window as "filler". Menus can be "window" (GTK 3) or "frame" (Chromium).
+        frames = [f for f in children if f.get_role_name() in ("frame", "window", "dialog", "alert", "filler")]
         cached = self.roots.get(client["address"])
         if cached:
             found = [f for f in frames if self.identity(f) == cached]
             if len(found) == 1:
                 return found[0]
+        if len(frames) > 1:
+            # An open menu is a separate accessible window; it is never the root.
+            popups = self.popup_geometry(client)
+            if popups:
+                frames = [f for f in frames if not self.popup_match(f, popups, client)] or frames
         named = [f for f in frames if f.get_name() == client.get("title")]
         chosen = named[0] if len(named) == 1 else frames[0] if len(frames) == 1 else None
         if chosen is None and named:
@@ -137,13 +357,17 @@ class Accessibility:
                     "name": client.get("title", ""),
                     "description": "No AT-SPI tree; use screenshot coordinates.",
                     "children": []}, "hyprland"
-        elements, seen = {}, set()
+        self.watched.add(client["pid"])
+        self.pump()
+        popups = self.popups(client, root)
+        elements, seen, offsets = {}, set(), {}
         deadline = time.monotonic() + 8
+        limit = 1500
         truncated = False
 
-        def walk(obj, depth=0):
+        def walk(obj, depth=0, popup=False, offset=None):
             nonlocal truncated
-            if len(seen) >= 1500 or depth > 40 or time.monotonic() > deadline:
+            if len(seen) >= limit or depth > 40 or time.monotonic() > deadline:
                 truncated = True
                 return None
             ident = self.identity(obj)
@@ -155,7 +379,7 @@ class Accessibility:
             if states.contains(self.api.StateType.DEFUNCT):
                 return None
             role = obj.get_role_name()
-            node = {"id": ident, "role": role, "name": obj.get_name() or "",
+            node = {"id": ident, "role": role, "name": self.name(obj, role),
                     "states": [], "actions": [], "children": []}
             for state in ("checked", "defunct", "editable", "enabled", "expanded",
                           "focusable", "focused", "selected", "sensitive", "showing",
@@ -168,10 +392,12 @@ class Accessibility:
             if role != "password text" and obj.is_text():
                 node["value"] = self.api.Text.get_text(obj, 0, min(obj.get_character_count(), 4000))
             elements[ident] = (obj, role, node["name"])
+            if popup:
+                offsets[ident] = offset
             for i in range(min(obj.get_child_count(), 1500)):
                 child = obj.get_child_at_index(i)
                 if child is not None:
-                    item = walk(child, depth + 1)
+                    item = walk(child, depth + 1, popup, offset)
                     if item is not None:
                         node["children"].append(item)
                 if truncated:
@@ -181,6 +407,20 @@ class Accessibility:
         tree = walk(root)
         if tree is None:
             raise ValueError("AT-SPI window disappeared during observation")
+        # Open menus become the window's last children, as a macOS menu is in
+        # its app's tree. They get their own budget so a large window cannot
+        # hide them; a menu already in the window's tree (a GTK 4 popover) stays.
+        limit, deadline, root_truncated = len(seen) + 500, time.monotonic() + 2, truncated
+        attached = []
+        for obj, offset in popups:
+            truncated, popup_truncated = False, truncated
+            node = walk(obj, 1, offset is not False, offset or None)
+            truncated = truncated or popup_truncated
+            if node is not None:
+                attached.append((self.identity(obj), node))
+                tree["children"].append(node)
+        truncated = truncated or root_truncated
+        self.popup_roots[wid] = {ident for ident, _ in attached}
         if truncated:
             tree["description"] = "Accessibility tree truncated by time, depth, or node budget."
         elif not tree["children"]:
@@ -194,6 +434,7 @@ class Accessibility:
                 return {**node, "children": kids} if matches or kids else None
             tree = keep(tree) or {**tree, "children": []}
         self.elements[wid] = elements
+        self.offsets[wid] = offsets
         return tree, "at_spi"
 
     def resolve(self, client, ident):
@@ -203,16 +444,24 @@ class Accessibility:
         obj, role, name = found
         obj.clear_cache()
         if (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
-                or obj.get_role_name() != role or obj.get_name() != name
+                or obj.get_role_name() != role or self.name(obj, role) != name
                 or obj.get_process_id() != client["pid"]):
             raise ValueError("Element changed; refresh getAXState()")
         # A surviving object may have been reparented into another window.
         expected = self.root(client)
+        popup_roots = self.popup_roots.get(client["address"], set())
         parent = obj
         for _ in range(64):
             if parent is None:
                 break
-            if expected is not None and self.identity(parent) == self.identity(expected):
+            ident = self.identity(parent)
+            if expected is not None and ident == self.identity(expected):
+                return obj
+            if ident in popup_roots:
+                # A menu element is usable only while its menu stays open.
+                parent.clear_cache()
+                if not parent.get_state_set().contains(self.api.StateType.SHOWING):
+                    raise ValueError("The menu containing this element has closed; refresh getAXState()")
                 return obj
             parent = parent.get_parent()
         raise ValueError("Element no longer belongs to the selected window")
@@ -222,11 +471,22 @@ class Accessibility:
         rect = obj.get_extents(self.api.CoordType.WINDOW)
         if rect.width <= 0 or rect.height <= 0:
             raise ValueError("Element has no usable bounds")
+        offsets = self.offsets.get(client["address"], {})
+        if ident in offsets:
+            # Popup elements report extents relative to their popup surface.
+            if offsets[ident] is None:
+                raise ValueError("This menu element's position is unknown; use its accessibility action or screenshot coordinates")
+            x, y, scale = offsets[ident]
+            return x + (rect.x + rect.width / 2) / scale, y + (rect.y + rect.height / 2) / scale
         return rect.x + rect.width / 2, rect.y + rect.height / 2
 
     def primary_action(self, client, ident, button):
         obj = self.resolve(client, ident)
         if not obj.is_action():
+            return None
+        if self.offsets.get(client["address"], {}).get(ident) and obj.get_role_name() in LABELLED_ROLES:
+            # Click a menu item in an open popup like a user does: Qt's press
+            # action triggers the item but leaves its menu open, unlike macOS.
             return None
         names = ("click", "press", "dodefault") if button == "left" else ("showcontextmenu", "show context menu", "menu")
         # Chromium exposes link activation as "jump", including offscreen

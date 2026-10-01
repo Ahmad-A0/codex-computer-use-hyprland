@@ -1,7 +1,7 @@
 // Toolkits whose accessibility needs switches on Linux, and terminals.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bind, clients, entry, expect, fixtures, hypr, js, out, python, state, statePath, until, which } from '../lib.mjs';
+import { bind, clients, contextMenu, entry, expect, fixtures, hypr, js, out, python, state, statePath, until, which } from '../lib.mjs';
 
 if (python('PyQt6')) {
   entry('codex-e2e-qt', 'Codex E2E Qt',
@@ -31,6 +31,36 @@ export default function (test) {
     await until(() => state('codex-e2e-qt').clicks === 1, 'Qt button click');
   }, { needs: python('PyQt6') ? null : 'PyQt6 not installed' });
 
+  test('Qt: context menu and button menu are observable and usable', async () => {
+    // Qt lists no popup among its AT-SPI application children; the provider
+    // finds open Qt menus through AT-SPI events, as a macOS AX tree shows them.
+    if (!await js('await nodeRepl.write(String(globalThis.qt !== undefined));').then((t) => t.trim().endsWith('true'))) {
+      await bind('qt', 'codex-e2e-qt.desktop', { timeout: 30000 });
+    }
+    await js(`await qt.setValue(await e2eFind(qt, "Qt entry", "text"), "menu target");`);
+    await contextMenu('qt', 'Qt entry', 'text', 'Select All');
+    await until(() => JSON.stringify(state('codex-e2e-qt').selection) === '[0,11]', 'select all from the Qt menu');
+    const text = await js(`const button = await e2eFind(qt, "Qt menu button", "push button menu");
+      await qt.getAXState({ emit: false });
+      await qt.click(button);
+      const result = {};
+      try {
+        result.opened = await qt.getAXState({ emit: false });
+        await qt.pressKey("Escape");
+        result.escaped = await qt.getAXState({ emit: false });
+        await qt.click(button);
+        await qt.click(await e2eFind(qt, "Qt second choice"));
+      } catch (error) {
+        await qt.pressKey("Escape");
+        throw error;
+      }
+      await nodeRepl.write(JSON.stringify(result));`);
+    const { opened, escaped } = JSON.parse(text.slice(text.indexOf('{"opened"')));
+    expect(opened.split('\n').some((l) => l.startsWith('+\t') && l.includes('Qt first choice')), `menu not added:\n${opened}`);
+    expect(escaped.includes('Removed element IDs') && !escaped.includes('Qt first choice'), `menu not removed:\n${escaped}`);
+    await until(() => state('codex-e2e-qt').menu === 'second', 'Qt menu choice');
+  }, { needs: python('PyQt6') ? null : 'PyQt6 not installed' });
+
   test('Chromium: silent launch, accessibility tree, typing, click', async () => {
     // Chromium names --app windows after the page, so use the documented Linux
     // flow: launch_app, then bind the new window found by title. Chromium also
@@ -46,6 +76,21 @@ export default function (test) {
     await until(() => window().title.startsWith('Codex E2E Page|from codex|'), 'page input', 8000);
     await js(`await page.click(await e2eFind(page, "Page button", "button")); await page.getAXState({ emit: false });`);
     await until(() => window().title.endsWith('|1'), 'page button click', 8000);
+  }, { needs: browser ? null : 'no Chromium-based browser' });
+
+  test('Chromium: page context menu is observable and usable', async () => {
+    // Chromium's context menu is a separate accessible frame of the app; it
+    // belongs to the page window through the compositor's popup of that size.
+    const window = () => clients().find((c) => c.title.startsWith('Codex E2E Page'));
+    expect(Boolean(window()) && await js('await nodeRepl.write(String(globalThis.page !== undefined));')
+      .then((t) => t.trim().endsWith('true')), 'needs the Chromium test above');
+    // Chromium's showContextMenu action leaves focus where it was, so focus the input first.
+    await js(`await page.click(await e2eFind(page, "Page input", "entry"));`);
+    await contextMenu('page', 'Page input', 'entry', 'Select all');
+    // Typing replaces the selection that the menu made.
+    await js(`await page.typeText("menu typed"); await page.getAXState({ emit: false });`);
+    await until(() => window().title.startsWith('Codex E2E Page|menu typed|') || window().title,
+      'typing replaced the menu selection', 8000);
   }, { needs: browser ? null : 'no Chromium-based browser' });
 
   test('Terminal: typing and the terminal paste shortcut', async () => {

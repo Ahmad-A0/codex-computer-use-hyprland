@@ -1,6 +1,6 @@
 // The public app API against a GTK app, on Wayland and XWayland.
 import { readFileSync } from 'node:fs';
-import { bind, client, clients, expect, gtk, js, provider, state, until } from '../lib.mjs';
+import { bind, client, clients, contextMenu, expect, gtk, js, provider, state, until } from '../lib.mjs';
 
 gtk('codex-e2e-gtk', 'Codex E2E GTK');
 gtk('codex-e2e-xgtk', 'Codex E2E XWayland', { backend: 'x11' });
@@ -57,12 +57,11 @@ export default function (test) {
   });
 
   test('GTK: right-click menu is observable and usable', async () => {
-    // On macOS a context menu appears in the app's accessibility tree.
-    await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.setValue(i, "menu target");
-      await gtk.click(i, { mouseButton: "right" });
-      try { await gtk.click(await e2eFind(gtk, "Select All")); }
-      finally { await gtk.pressKey("Escape"); } // never leave a menu open for later tests
-      await gtk.getAXState({ emit: false });`);
+    // On macOS a context menu appears in the app's accessibility tree. The
+    // window is on the hidden "codex" workspace, so this also checks that its
+    // screenshot composes the menu.
+    await js(`await gtk.setValue(await e2eFind(gtk, "E2E entry", "text"), "menu target");`);
+    await contextMenu('gtk', 'E2E entry', 'text', 'Select All', { reopen: true });
     await until(() => JSON.stringify(state('codex-e2e-gtk').selection) === '[0,11]', 'select all from the menu');
   });
 
@@ -115,5 +114,11 @@ export default function (test) {
     await js(`const i = await e2eFind(xgtk, "E2E entry", "text"); await xgtk.click(i); await xgtk.pressKey("ctrl+a");
       await xgtk.paste("x11 paste", { format: "text" }); await xgtk.getAXState({ emit: false });`);
     await until(() => state('codex-e2e-xgtk').text === 'x11 paste', 'pasted text');
+  });
+
+  test('XWayland: right-click menu is observable and usable', async () => {
+    await js(`await xgtk.setValue(await e2eFind(xgtk, "E2E entry", "text"), "menu target");`);
+    await contextMenu('xgtk', 'E2E entry', 'text', 'Select All', { reopen: true });
+    await until(() => JSON.stringify(state('codex-e2e-xgtk').selection) === '[0,11]', 'select all from the menu');
   });
 }
