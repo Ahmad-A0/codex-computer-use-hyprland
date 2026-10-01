@@ -9,7 +9,7 @@
 #   E2E_REPROVISION  set to rebuild the provisioned disk
 #   E2E_ARTIFACTS    results, logs, versions.json, screenshot (default ./e2e-artifacts)
 #   E2E_ONLY         passed through to the suite
-#   E2E_TIMEOUT      suite time limit in seconds (default 1200)
+#   E2E_TIMEOUT      suite time limit in seconds (default 900)
 # --cache-keys prints ready=<provisioned disk key> and base=<cloud image key>.
 set -euo pipefail
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -148,11 +148,17 @@ ls -lh "$ready"
 boot "$ready" ""
 testing=1
 mark boot
+# The checkout as it is, without ignored build products.
+if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$root" ls-files -z -co --exclude-standard | tar -C "$root" --null --ignore-failed-read -T - -czf -
+else
+  tar -C "$root" --exclude=./.git --exclude=./.venv --exclude=./build --exclude=./reference -czf - .
+fi | vm "mkdir -p ~/$repo && tar -C ~/$repo -xzf -"
 for _ in $(seq 60); do vm 'test -s ~/.session-env' && break; sleep 2; done
 # virtio-gpu's output can appear shortly after the compositor starts.
 monitors='hyprctl monitors -j | python3 -c "import json,sys; sys.exit(not json.load(sys.stdin))"'
 for _ in $(seq 30); do session "$monitors" && break; sleep 2; done
-session "$monitors; hyprctl instances -j; hyprctl monitors"
+session "$monitors && hyprctl instances -j && hyprctl monitors"
 mark session
 vm 'python3 - <<EOF
 import json, subprocess
@@ -164,18 +170,12 @@ print(json.dumps(versions))
 EOF' > "$artifacts/versions.json"
 cat "$artifacts/versions.json"
 
-# The checkout as it is, without ignored build products.
-if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
-  git -C "$root" ls-files -z -co --exclude-standard | tar -C "$root" --null --ignore-failed-read -T - -czf -
-else
-  tar -C "$root" --exclude=./.git --exclude=./.venv --exclude=./build --exclude=./reference -czf - .
-fi | vm "mkdir -p ~/$repo && tar -C ~/$repo -xzf -"
 session ./install 2>&1 | tee "$artifacts/install.log"
 mark install
 session ./doctor 2>&1 | tee "$artifacts/doctor.log"
 mark doctor
 set +e
-session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' timeout -k 10 ${E2E_TIMEOUT:-1200} ./test --host" 2>&1 | tee "$artifacts/suite.log"
+session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' timeout -k 10 ${E2E_TIMEOUT:-900} ./test --host" 2>&1 | tee "$artifacts/suite.log"
 suite=${PIPESTATUS[0]}
 set -e
 mark suite
