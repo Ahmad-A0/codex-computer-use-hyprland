@@ -129,6 +129,7 @@ export default function (test) {
   });
 
   test('XWayland: right-click menu is observable and usable', async () => {
+    await ensure('xgtk', 'codex-e2e-xgtk.desktop', { timeout: 30000 });
     await js(`await xgtk.setValue(await e2eFind(xgtk, "E2E entry", "text"), "menu target");`);
     await contextMenu('xgtk', 'E2E entry', 'text', 'Select All', { reopen: true });
     await until(() => JSON.stringify(state('codex-e2e-xgtk').selection) === '[0,11]', 'select all from the menu');
