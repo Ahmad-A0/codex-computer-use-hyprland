@@ -88,12 +88,20 @@ def offer(client, fields, trigger):
         background.send(client, 'paste_end', token=token)
 
 
-def read_pipe(fd, limit, deadline):
+# ICCCM selection requests that are not data formats. GTK 3 also lists them as
+# Wayland MIME types (SAVE_TARGETS for clipboard managers) but never answers
+# them, and DELETE/INSERT_* would modify the app's selection.
+SELECTION_REQUESTS = frozenset(('TARGETS', 'TIMESTAMP', 'MULTIPLE', 'SAVE_TARGETS', 'DELETE',
+                                'INSERT_SELECTION', 'INSERT_PROPERTY'))
+
+
+def read_pipe(fd, limit, deadline, mime=None):
     chunks, size = [], 0
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
-            raise RuntimeError('Application did not finish writing its copied data')
+            raise RuntimeError('Application did not finish writing its copied data'
+                               + (f' ({mime})' if mime else ''))
         chunk = os.read(fd, 1 << 16)
         if not chunk:
             return b''.join(chunks)
@@ -115,7 +123,7 @@ def copy(client, trigger):
             if time.monotonic() > deadline:
                 raise RuntimeError('Copy did not update the clipboard; select content first')
             time.sleep(.025)
-        mimes = list(dict.fromkeys(state['mimes']))
+        mimes = [m for m in dict.fromkeys(state['mimes']) if m not in SELECTION_REQUESTS]
         if len(mimes) > 128:
             raise RuntimeError('Clipboard advertises too many formats')
         result, total, deadline = {}, 0, time.monotonic() + 10
@@ -126,7 +134,7 @@ def copy(client, trigger):
                 fd = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
                 try:
                     background.send(client, 'copy_read', mime=mime, path=pipe)
-                    data = read_pipe(fd, min(32 << 20, (64 << 20) - total), deadline)
+                    data = read_pipe(fd, min(32 << 20, (64 << 20) - total), deadline, mime)
                 finally:
                     os.close(fd)
                 if data:

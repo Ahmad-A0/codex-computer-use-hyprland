@@ -33,6 +33,8 @@ int main(){
   window=XCreateSimpleWindow(d,DefaultRootWindow(d),0,0,1,1,0,0,0);XSelectInput(d,window,PropertyChangeMask);
   auto atom=[&](const char* s){return XInternAtom(d,s,False);};
   Atom clipboard=atom("CLIPBOARD"),targets=atom("TARGETS"),timestamp=atom("TIMESTAMP"),multiple=atom("MULTIPLE"),save=atom("SAVE_TARGETS"),incr=atom("INCR"),property=atom("CODEX_CLIPBOARD_DATA");
+  // ICCCM requests, not data formats; DELETE and INSERT_* would edit the owner's selection.
+  auto selectionRequest=[&,del=atom("DELETE"),insertSelection=atom("INSERT_SELECTION"),insertProperty=atom("INSERT_PROPERTY")](Atom t){return t==targets||t==timestamp||t==multiple||t==save||t==del||t==insertSelection||t==insertProperty;};
   auto read=[&](Window w,Atom p,bool erase){Value v;unsigned long count=0,left=0;unsigned char* data=nullptr;need(XGetWindowProperty(d,w,p,0,8*1024*1024,erase,AnyPropertyType,&v.type,&v.format,&count,&left,&data)==Success,"Cannot read clipboard property");if(left){if(data)XFree(data);throw std::runtime_error("Clipboard format exceeds 32 MiB snapshot limit");}if(data){v.data.assign(data,data+count*(v.format==32?sizeof(long):v.format/8));XFree(data);}return v;};
   auto waitEvent=[&](auto predicate){auto deadline=Clock::now()+std::chrono::seconds(3);XEvent event;while(Clock::now()<deadline){while(XPending(d)){XNextEvent(d,&event);if(predicate(event))return event;}fd_set fds;FD_ZERO(&fds);FD_SET(ConnectionNumber(d),&fds);timeval tv{0,20000};select(ConnectionNumber(d)+1,&fds,nullptr,nullptr,&tv);}throw std::runtime_error("Clipboard owner did not complete its transfer");};
   auto convert=[&](Atom target){XDeleteProperty(d,window,property);XConvertSelection(d,clipboard,target,property,window,CurrentTime);XFlush(d);auto event=waitEvent([&](XEvent& e){return e.type==SelectionNotify&&e.xselection.requestor==window;});if(event.xselection.property==None)return Value{};auto v=read(window,property,True);if(v.type!=incr)return v;Value result;for(;;){XFlush(d);waitEvent([&](XEvent& e){return e.type==PropertyNotify&&e.xproperty.window==window&&e.xproperty.atom==property&&e.xproperty.state==PropertyNewValue;});auto chunk=read(window,property,True);if(chunk.data.empty())break;if(result.data.empty()){result.type=chunk.type;result.format=chunk.format;}need(result.type==chunk.type&&result.format==chunk.format,"Clipboard format changed mid-transfer");need(result.data.size()+chunk.data.size()<=32*1024*1024,"Clipboard snapshot exceeds limit");result.data.insert(result.data.end(),chunk.data.begin(),chunk.data.end());}return result;};
@@ -64,7 +66,7 @@ int main(){
      types.type=XA_ATOM;types.format=32;
     }else if(compositorOwner && json_object_object_get_ex(request,"clipboard_empty",&empty)&&json_object_get_boolean(empty)){types.type=XA_ATOM;types.format=32;}
    }
-   need(types.type==XA_ATOM&&types.format==32,"Clipboard owner did not enumerate formats");need(types.count()<=256,"Clipboard advertises too many formats");auto* values=reinterpret_cast<const unsigned long*>(types.data.data());for(size_t i=0;i<types.count();++i){Atom t=values[i];if(t==targets||t==timestamp||t==multiple||t==save)continue;need(Clock::now()<snapshotDeadline,"Clipboard snapshot timed out");auto v=convert(t);snapshotBytes+=v.data.size();need(snapshotBytes<=64*1024*1024,"Clipboard snapshot exceeds total limit");if(v.type!=None)previous[t]=std::move(v);}}
+   need(types.type==XA_ATOM&&types.format==32,"Clipboard owner did not enumerate formats");need(types.count()<=256,"Clipboard advertises too many formats");auto* values=reinterpret_cast<const unsigned long*>(types.data.data());for(size_t i=0;i<types.count();++i){Atom t=values[i];if(selectionRequest(t))continue;need(Clock::now()<snapshotDeadline,"Clipboard snapshot timed out");auto v=convert(t);snapshotBytes+=v.data.size();need(snapshotBytes<=64*1024*1024,"Clipboard snapshot exceeds total limit");if(v.type!=None)previous[t]=std::move(v);}}
   need(XGetSelectionOwner(d,clipboard)==previousOwner,"Clipboard changed during snapshot; paste not started");
   json_object* snapshot=nullptr;
   if(json_object_object_get_ex(request,"wayland_snapshot",&snapshot)){
@@ -83,7 +85,7 @@ int main(){
    std::map<Atom,Value> copied;size_t copiedBytes=0;
    auto types=convert(targets);need(types.type==XA_ATOM&&types.format==32,"Clipboard owner did not enumerate formats");need(types.count()<=256,"Clipboard advertises too many formats");
    auto* values=reinterpret_cast<const unsigned long*>(types.data.data());auto copyDeadline=Clock::now()+std::chrono::seconds(8);
-   for(size_t i=0;i<types.count();++i){Atom t=values[i];if(t==targets||t==timestamp||t==multiple||t==save)continue;need(Clock::now()<copyDeadline,"Clipboard capture timed out");auto v=convert(t);copiedBytes+=v.data.size();need(copiedBytes<=64*1024*1024,"Clipboard snapshot exceeds total limit");if(v.type!=None)copied[t]=std::move(v);}
+   for(size_t i=0;i<types.count();++i){Atom t=values[i];if(selectionRequest(t))continue;need(Clock::now()<copyDeadline,"Clipboard capture timed out");auto v=convert(t);copiedBytes+=v.data.size();need(copiedBytes<=64*1024*1024,"Clipboard snapshot exceeds total limit");if(v.type!=None)copied[t]=std::move(v);}
    need(!copied.empty(),"Copy cleared the clipboard");
    // One reply line after restoration: the copied formats, hex-encoded.
    auto* formats=json_object_new_object();
