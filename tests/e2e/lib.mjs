@@ -157,5 +157,35 @@ export function seatViolation(before) {
   return null;
 }
 
+/** Screenshots of every test window (never the user's) for the report. */
+export function snap(label) {
+  const addresses = clients().filter(ours).map((c) => c.address);
+  if (!addresses.length) return [];
+  try {
+    return execFileSync(join(root, '.venv/bin/python'), [join(root, 'tests/e2e/snap.py'), out, label, ...addresses],
+      { encoding: 'utf8', env: { ...process.env, XDG_DATA_HOME: out }, timeout: 60000 })
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  } catch (error) {
+    return [{ error: `snapshot failed: ${error.message.slice(0, 300)}` }];
+  }
+}
+
+/** Full accessibility trees of whatever apps the REPL has bound, for failures. */
+export async function trees() {
+  const names = ['gtk', 'xgtk', 'qt', 'page', 'term', 'calc', 'editor', 'save', 'dlg', 'custom'];
+  try {
+    const text = await js(`const result = {};
+      for (const name of ${JSON.stringify(names)}) {
+        if (typeof globalThis[name] === "undefined") continue;
+        try { result[name] = await globalThis[name].getAXState({ emit: false, disableDiffing: true }); }
+        catch (error) { result[name] = String(error); }
+      }
+      await nodeRepl.write("E2E-TREES" + JSON.stringify(result));`);
+    return JSON.parse(text.slice(text.indexOf('E2E-TREES') + 9));
+  } catch (error) {
+    return { error: error.message.slice(0, 500) };
+  }
+}
+
 export const ours = (c) => !original.has(c.address) && (String(c.class).startsWith('codex-e2e')
   || String(c.title).startsWith('Codex E2E') || launchedClasses.has(c.class));

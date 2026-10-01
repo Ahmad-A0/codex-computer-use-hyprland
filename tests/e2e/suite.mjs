@@ -5,7 +5,8 @@
 // Output (results.json, provider.log) goes to $E2E_OUT, default a temporary directory.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { clients, helpers, js, ours, out, provider, seat, seatViolation } from './lib.mjs';
+import { clients, helpers, js, ours, out, provider, seat, seatViolation, snap, trees } from './lib.mjs';
+import { report } from './report.mjs';
 import basics from './cases/basics.mjs';
 import gtk from './cases/gtk.mjs';
 import windows from './cases/windows.mjs';
@@ -34,24 +35,31 @@ try {
       continue;
     }
     const before = seat();
+    const label = `${String(results.length + 1).padStart(2, '0')}-${t.name}`;
     try {
       await t.run();
       const violation = t.setup ? null : seatViolation(before);
       if (violation) throw new Error(violation);
-      results.push({ name: t.name, status: 'passed', ms: Date.now() - started });
+      results.push({ name: t.name, status: 'passed', ms: Date.now() - started, shots: snap(label) });
       console.log(`PASS ${t.name}`);
     } catch (error) {
       failed++;
-      results.push({ name: t.name, status: 'failed', ms: Date.now() - started, error: error.message });
+      // What the apps actually showed is usually the fastest way to the cause.
+      results.push({ name: t.name, status: 'failed', ms: Date.now() - started, error: error.message,
+        shots: snap(label), trees: await trees() });
       console.log(`FAIL ${t.name}\n  ${error.message.split('\n').join('\n  ')}`);
     }
   }
 } finally {
   provider.stop();
+  // Apps with unsaved work may ignore SIGTERM; our disposable ones must not linger.
   for (const c of clients()) if (ours(c)) try { process.kill(c.pid, 'SIGTERM'); } catch {}
+  await new Promise((done) => setTimeout(done, 1500));
+  for (const c of clients()) if (ours(c)) try { process.kill(c.pid, 'SIGKILL'); } catch {}
   writeFileSync(join(out, 'results.json'), JSON.stringify({ results, elicitations: provider.elicitations }, null, 2));
   writeFileSync(join(out, 'provider.log'), provider.stderr);
+  writeFileSync(join(out, 'report.html'), report(results));
 }
 const count = (status) => results.filter((r) => r.status === status).length;
-console.log(`${count('passed')} passed, ${failed} failed, ${count('skipped')} skipped. Results: ${out}`);
+console.log(`${count('passed')} passed, ${failed} failed, ${count('skipped')} skipped. Report: ${join(out, 'report.html')}`);
 process.exit(failed ? 1 : 0);
