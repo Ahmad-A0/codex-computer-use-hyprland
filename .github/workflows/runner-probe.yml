@@ -1,0 +1,14 @@
+name: runner-probe
+# Checks the hosted runner can host the end-to-end VM (KVM, CPU, memory).
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          nproc; free -g; df -h / | tail -1
+          ls -l /dev/kvm || echo "no /dev/kvm"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          sudo apt-get install -y -qq qemu-system-x86 >/dev/null && qemu-system-x86_64 -accel help
+          timeout 20 qemu-system-x86_64 -accel kvm -m 256 -nographic -no-reboot -kernel /boot/vmlinuz-$(uname -r) -append "console=ttyS0 panic=-1" 2>&1 | head -5 || true
