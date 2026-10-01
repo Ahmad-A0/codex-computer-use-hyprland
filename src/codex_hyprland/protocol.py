@@ -8,22 +8,26 @@ from .backend import Backend
 PARAMETERS = {
     "list_apps": set(), "list_windows": set(), "get_screenshot": set(),
     "get_window_state": {"window", "include_screenshot", "query"},
-    "click": {"window", "element_id", "x", "y", "mouse_button", "click_count"},
-    "scroll": {"window", "element_id", "x", "y", "direction", "pixels", "pages"},
-    "drag": {"window", "path"}, "type_text": {"window", "text"},
-    "press_key": {"window", "key"},
+    "click": {"window", "element_id", "x", "y", "mouse_button", "click_count", "key", "duration"},
+    "scroll": {"window", "element_id", "x", "y", "direction", "pixels", "pages", "key"},
+    "drag": {"window", "path", "key"}, "type_text": {"window", "element_id", "text"},
+    "press_key": {"window", "key", "duration"},
+    "key_down": {"window", "key"}, "key_up": {"window", "key"},
+    "clipboard_read": {"window"}, "clipboard_write": {"window", "handle"}, "clipboard_release": {"handle"},
+    "drag_handle": {"window", "action", "x", "y"},
     "select_text": {"window", "element_id", "text", "prefix", "suffix", "selection_type"},
     "set_value": {"window", "element_id", "value"},
     "paste": {"window", "text", "format"},
     "perform_secondary_action": {"window", "element_id", "action"},
     "resolve_app": {"app"}, "app_policy": {"window", "app"}, "launch_app": {"app"}, "activate_window": {"window"},
-    "move": {"window", "x", "y"}, "move_relative": {"dx", "dy"},
+    "move": {"window", "x", "y", "key"}, "move_relative": {"dx", "dy", "key"},
 }
+# start_audio_recording/stop_audio_recording (SKY_ENABLE_AUDIO=1 only) are not implemented.
 MAX_LINE = 2 * 1024 * 1024
 INPUT_COMMANDS = {
     'click', 'scroll', 'drag', 'type_text', 'press_key', 'select_text',
     'set_value', 'paste', 'perform_secondary_action', 'activate_window',
-    'move', 'move_relative',
+    'move', 'move_relative', 'key_down', 'key_up', 'clipboard_read', 'clipboard_write', 'drag_handle',
 }
 
 
@@ -39,6 +43,8 @@ def dispatch(backend, request):
     if not isinstance(params, dict) or params.keys() - PARAMETERS[method]:
         raise ValueError(f"Unsupported parameters for {method}")
     try:
+        if method in INPUT_COMMANDS:
+            backend.check_holds(method)
         return getattr(backend, method)(params)
     finally:
         # Even a failed action may have delivered partial input. Settle the next

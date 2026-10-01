@@ -11,10 +11,11 @@ inline std::shared_ptr<Clipboard::DropResult> drop;
 inline wl_event_source* deadline=nullptr;
 inline CHyprSignalListener physicalButton;
 inline bool dropped=false;
+inline uint32_t button=272,lifetime=15000;  // A Sky drag handle may hold longer between steps.
 inline void restore() {
     auto actual=g_pSeatManager->m_state.pointerFocus.lock();Vector2D local;
     if(actual)if(auto wrapper=Desktop::View::CWLSurface::fromResource(actual))if(auto box=wrapper->getSurfaceBoxGlobal())local=Pointer::mgr()->position()-box->pos();
-    for(auto& p:pointers){p->sendButton(now(),272,WL_POINTER_BUTTON_STATE_RELEASED);p->sendFrame();p->sendLeave();if(actual && p->m_owner && actual->client()==p->m_owner->client()){p->sendEnter(actual,local);p->sendFrame();}}
+    for(auto& p:pointers){p->sendButton(now(),button,WL_POINTER_BUTTON_STATE_RELEASED);p->sendFrame();p->sendLeave();if(actual && p->m_owner && actual->client()==p->m_owner->client()){p->sendEnter(actual,local);p->sendFrame();}}
     pointers.clear();
 }
 inline void cancel() {
@@ -36,20 +37,21 @@ inline void setup(HANDLE plugin) {
     require(hook && hook->hook(),"Cannot install isolated DND routing hook");
     physicalButton=Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent,Event::SCallbackInfo&){if(origin)cancel();});
 }
-inline std::string begin(PHLWINDOW window,SP<CWLSeatResource> clientSeat,Vector2D point) {
+inline std::string begin(PHLWINDOW window,SP<CWLSeatResource> clientSeat,Vector2D point,uint32_t pressed=272,uint32_t timeout=15000) {
     require(!origin,"Another background drag is active");
     Vector2D local;auto surface=Desktop::viewState()->hitTest().windowSurfaceAt(window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL)+point,window,local);
     require(bool(surface),"No drag source at point");
     for(auto& weak:clientSeat->m_pointers)if(auto p=weak.lock())pointers.push_back(p);
     require(!pointers.empty(),"Drag source has no pointer resources");
-    origin=surface;seat=clientSeat;
+    origin=surface;seat=clientSeat;button=pressed;lifetime=timeout;
     deadline=wl_event_loop_add_timer(wl_display_get_event_loop(g_pCompositor->m_wlDisplay),[](void*){cancel();return 0;},nullptr);
-    require(deadline,"Cannot arm drag cleanup timer");wl_event_source_timer_update(deadline,15000);
-    for(auto& p:pointers){p->sendEnter(origin,local);p->sendMotion(now(),local);p->sendButton(now(),272,WL_POINTER_BUTTON_STATE_PRESSED);p->sendFrame();}
+    require(deadline,"Cannot arm drag cleanup timer");wl_event_source_timer_update(deadline,lifetime);
+    for(auto& p:pointers){p->sendEnter(origin,local);p->sendMotion(now(),local);p->sendButton(now(),button,WL_POINTER_BUTTON_STATE_PRESSED);p->sendFrame();}
     return R"({"ok":true})";
 }
 inline std::string move(PHLWINDOW window,Vector2D point) {
     require(bool(origin),"No background drag is active");
+    if(deadline)wl_event_source_timer_update(deadline,lifetime);
     Vector2D local;auto hit=Desktop::viewState()->hitTest();auto position=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL)+point;
     auto surface=hit.windowSurfaceAt(position,window,local);
     if(source && !surface){if(device && destination)wl_data_device_send_leave(device);destination.reset();device=nullptr;drop.reset();return R"({"ok":true})";}

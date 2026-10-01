@@ -37,7 +37,7 @@ fi
 
 if [ "$(cat build/helpers-id 2>/dev/null)" != "$helpers_id" ] || [ ! -x build/codex-x11 ] || [ ! -x build/codex-xclipboard ]; then
   c++ -std=c++23 -O2 -Wall -Wextra $(pkg-config --cflags x11 xi xtst xcomposite json-c) native/x11.cpp -o build/codex-x11.new $(pkg-config --libs x11 xi xtst xcomposite json-c)
-  c++ -std=c++23 -O2 -Wall -Wextra $(pkg-config --cflags x11 xres json-c) native/xclipboard.cpp -o build/codex-xclipboard.new $(pkg-config --libs x11 xres json-c)
+  c++ -std=c++23 -O2 -Wall -Wextra $(pkg-config --cflags x11 xres xfixes json-c) native/xclipboard.cpp -o build/codex-xclipboard.new $(pkg-config --libs x11 xres xfixes json-c)
   mv build/codex-xclipboard.new build/codex-xclipboard
   mv build/codex-x11.new build/codex-x11
   printf '%s\n' "$helpers_id" > build/helpers-id

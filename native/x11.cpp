@@ -28,11 +28,25 @@ int main(int argc,char** argv){
   need(argc==2,"Expected JSON request");
   std::unique_ptr<json_object,decltype(&json_object_put)> j(json_tokener_parse(argv[1]),json_object_put);need(bool(j),"Invalid JSON");
   Connection conn{XOpenDisplay(str(j.get(),"display").c_str())};need(conn.d,"Cannot connect to XWayland");auto* d=conn.d;
-  Window target=json_object_get_uint64(field(j.get(),"xid"));XWindowAttributes attr;need(XGetWindowAttributes(d,target,&attr),"X11 window disappeared");
-  if(str(j.get(),"op")=="popup_capture"){std::cout<<capturePopups(d,target,attr,j.get())<<std::endl;return 0;}
   int masterPointer=0,masterKeyboard=0,slavePointer=0,slaveKeyboard=0;
   auto discover=[&](){int count=0;auto* all=XIQueryDevice(d,XIAllDevices,&count);for(int i=0;i<count;++i){std::string name=all[i].name;if(name=="Codex background pointer")masterPointer=all[i].deviceid;else if(name=="Codex background keyboard")masterKeyboard=all[i].deviceid;else if(name=="Codex background XTEST pointer")slavePointer=all[i].deviceid;else if(name=="Codex background XTEST keyboard")slaveKeyboard=all[i].deviceid;}XIFreeDeviceInfo(all);};
   discover();
+  // Keys and buttons held by Sky key_down/drag_handle/durations stay down on
+  // the private devices between helper runs. Report what each device holds.
+  auto pressed=[&](XDevice* device,int kind){std::vector<unsigned> codes;auto* state=XQueryDeviceState(d,device);if(!state)return codes;auto* c=state->data;
+   for(int i=0;i<state->num_classes;++i){if(c->c_class==kind && kind==KeyClass){auto* k=reinterpret_cast<XKeyState*>(c);for(int code=8;code<k->num_keys && code<256;++code)if(k->keys[code/8]&(1<<(code%8)))codes.push_back(code);}
+    if(c->c_class==kind && kind==ButtonClass){auto* b=reinterpret_cast<XButtonState*>(c);for(int n=1;n<b->num_buttons && n<256;++n)if(b->buttons[n/8]&(1<<(n%8)))codes.push_back(n);}
+    c=reinterpret_cast<XInputClass*>(reinterpret_cast<char*>(c)+c->length);}
+   XFreeDeviceState(state);return codes;};
+  if(str(j.get(),"op")=="release_all"){
+   if(slavePointer&&slaveKeyboard){auto* p=XOpenDevice(d,slavePointer);auto* k=XOpenDevice(d,slaveKeyboard);need(p&&k,"Cannot open isolated X11 input devices");
+    for(auto b:pressed(p,ButtonClass))XTestFakeDeviceButtonEvent(d,p,b,False,nullptr,0,CurrentTime);
+    for(auto code:pressed(k,KeyClass))XTestFakeDeviceKeyEvent(d,k,code,False,nullptr,0,CurrentTime);
+    XSync(d,False);XCloseDevice(d,k);XCloseDevice(d,p);}
+   std::cout<<"{\"ok\":true}\n";return 0;
+  }
+  Window target=json_object_get_uint64(field(j.get(),"xid"));XWindowAttributes attr;need(XGetWindowAttributes(d,target,&attr),"X11 window disappeared");
+  if(str(j.get(),"op")=="popup_capture"){std::cout<<capturePopups(d,target,attr,j.get())<<std::endl;return 0;}
   if(!masterPointer){XIAddMasterInfo info{XIAddMaster,const_cast<char*>("Codex background"),True,True};need(XIChangeHierarchy(d,reinterpret_cast<XIAnyHierarchyChangeInfo*>(&info),1)==Success,"Cannot create isolated X11 input devices");XSync(d,False);discover();}
   need(masterPointer&&masterKeyboard&&slavePointer&&slaveKeyboard,"Isolated X11 devices unavailable");
   auto* pointerDevice=XOpenDevice(d,slavePointer);auto* keyboardDevice=XOpenDevice(d,slaveKeyboard);need(pointerDevice&&keyboardDevice,"Cannot open isolated X11 input devices");
@@ -51,6 +65,20 @@ int main(int argc,char** argv){
    XCloseDevice(d,keyboardDevice);XCloseDevice(d,pointerDevice);std::cout<<"{\"ok\":true}\n";return 0;
   }
   XISetFocus(d,masterKeyboard,target,CurrentTime);XSync(d,False);settleEvents();
+  // The provider sends this target's held keys; the private keyboard holds
+  // exactly those (in order), so another target's holds never leak here.
+  std::vector<unsigned> held;
+  if(json_object* names=nullptr;json_object_object_get_ex(j.get(),"held",&names)){
+   need(json_object_is_type(names,json_type_array)&&json_object_array_length(names)<=16,"Expected at most 16 held keys");
+   for(size_t i=0;i<json_object_array_length(names);++i){auto sym=XStringToKeysym(json_object_get_string(json_object_array_get_idx(names,i)));need(sym!=NoSymbol,"Unknown X11 key");
+    int lo,hi;XDisplayKeycodes(d,&lo,&hi);unsigned code=0;for(int c=lo;c<=hi && !code;++c)for(int level=0;level<2;++level)if(XkbKeycodeToKeysym(d,c,0,level)==sym){code=c;break;}
+    need(code,"X11 key is not mapped");if(std::find(held.begin(),held.end(),code)==held.end())held.push_back(code);}
+  }
+  {auto down=pressed(keyboardDevice,KeyClass);bool changed=false;
+   for(auto it=down.rbegin();it!=down.rend();++it)if(std::find(held.begin(),held.end(),*it)==held.end()){XTestFakeDeviceKeyEvent(d,keyboardDevice,*it,False,nullptr,0,CurrentTime);changed=true;}
+   for(auto code:held)if(std::find(down.begin(),down.end(),code)==down.end()){XTestFakeDeviceKeyEvent(d,keyboardDevice,code,True,nullptr,0,CurrentTime);changed=true;}
+   if(changed){XSync(d,False);settleEvents();}}
+  auto isHeld=[&](unsigned code){return std::find(held.begin(),held.end(),code)!=held.end();};
   auto point=[&](double x,double y){return std::pair<int,int>{std::lround(x*attr.width/num(j.get(),"width")),std::lround(y*attr.height/num(j.get(),"height"))};};
   auto pointer=[&](int type,double x,double y,unsigned button,unsigned){
    auto [px,py]=point(x,y);XIWarpPointer(d,masterPointer,None,target,0,0,0,0,px,py);XSync(d,False);settleEvents();
@@ -59,13 +87,15 @@ int main(int argc,char** argv){
   auto key=[&](unsigned code,unsigned state){
    std::vector<unsigned> modifiers;
    for(auto [mask,symbol]:{std::pair{ShiftMask,XK_Shift_L},std::pair{ControlMask,XK_Control_L},std::pair{Mod1Mask,XK_Alt_L},std::pair{Mod4Mask,XK_Super_L},std::pair{Mod5Mask,XK_ISO_Level3_Shift}})
-    if(state&mask){auto c=XKeysymToKeycode(d,symbol);if(c){modifiers.push_back(c);XTestFakeDeviceKeyEvent(d,keyboardDevice,c,True,nullptr,0,CurrentTime);}}
+    if(state&mask){auto c=XKeysymToKeycode(d,symbol);if(c && !isHeld(c)){modifiers.push_back(c);XTestFakeDeviceKeyEvent(d,keyboardDevice,c,True,nullptr,0,CurrentTime);}}
    XTestFakeDeviceKeyEvent(d,keyboardDevice,code,True,nullptr,0,CurrentTime);XTestFakeDeviceKeyEvent(d,keyboardDevice,code,False,nullptr,0,CurrentTime);
    for(auto it=modifiers.rbegin();it!=modifiers.rend();++it)XTestFakeDeviceKeyEvent(d,keyboardDevice,*it,False,nullptr,0,CurrentTime);
    XSync(d,False);settleEvents();
   };
   auto find=[&](KeySym sym){int lo,hi;XDisplayKeycodes(d,&lo,&hi);for(int code=lo;code<=hi;++code)for(int level=0;level<2;++level)if(XkbKeycodeToKeysym(d,code,0,level)==sym)return std::pair<unsigned,unsigned>{code,level?ShiftMask:0};return std::pair<unsigned,unsigned>{0,0};};
   if(op=="ax_probe") {focusEvent(target,FocusIn);XSync(d,False);}
+  else if(op=="hold") {}
+  else if(op=="drag_motion") {double x=num(j.get(),"x"),y=num(j.get(),"y");need(std::isfinite(x)&&std::isfinite(y),"Invalid X11 point");pointer(MotionNotify,x,y,0,0);}
   else if(op=="key") {
    auto sym=XStringToKeysym(str(j.get(),"key").c_str());need(sym!=NoSymbol,"Unknown X11 key");auto [code,mods]=find(sym);need(code,"X11 key is not mapped");
    auto a=field(j.get(),"modifiers");for(size_t i=0;i<json_object_array_length(a);++i){std::string m=json_object_get_string(json_object_array_get_idx(a,i));mods|=m=="Shift"?ShiftMask:m=="Control"?ControlMask:m=="Mod1"?Mod1Mask:m=="Mod4"?Mod4Mask:m=="Mod5"?Mod5Mask:0;}
@@ -79,8 +109,10 @@ int main(int argc,char** argv){
   } else {
    double x=num(j.get(),"x"),y=num(j.get(),"y");bool valid=x>=0&&y>=0&&x<num(j.get(),"width")&&y<num(j.get(),"height");
    if(!valid){auto [px,py]=point(x,y);for(auto p:ownedPopups(d,target))if(px>=p.x&&py>=p.y&&px<p.x+p.width&&py<p.y+p.height)valid=true;}
-   need(valid,"X11 point outside window and owned popups");
-   if(op=="click" || op=="move" || op=="scroll"){
+   need(valid || (op=="button" && str(j.get(),"state")=="up"),"X11 point outside window and owned popups");
+   bool press=op=="button" && str(j.get(),"state")=="down";
+   if(op=="button" && !press){auto b=str(j.get(),"button");pointer(ButtonRelease,x,y,b=="left"?1:b=="middle"?2:3,0);XCloseDevice(d,keyboardDevice);XCloseDevice(d,pointerDevice);XSync(d,False);std::cout<<"{\"ok\":true}\n";return 0;}
+   if(op=="click" || op=="move" || op=="scroll" || press){
     auto [px,py]=point(x,y);Window window=target;
     for(auto popup:ownedPopups(d,target))if(px>=popup.x&&py>=popup.y&&px<popup.x+popup.width&&py<popup.y+popup.height){window=popup.window;px-=popup.x;py-=popup.y;break;}
     bool menuGrab=false;for(auto popup:ownedPopups(d,target))if(popup.menu)menuGrab=true;
@@ -91,7 +123,9 @@ int main(int argc,char** argv){
     // Never let a covered coordinate silently reach an unrelated X window.
     need(menuGrab || visible==window,"X11 pointer target is covered by another X window; use an accessibility action or expose the target");
    }
-   if(op=="click") {auto b=str(j.get(),"button");unsigned button=b=="left"?1:b=="middle"?2:3;for(int i=0;i<num(j.get(),"count");++i){pointer(ButtonPress,x,y,button,0);pointer(ButtonRelease,x,y,button,1u<<(7+button));}}
+   if(op=="click") {auto b=str(j.get(),"button");unsigned button=b=="left"?1:b=="middle"?2:3;json_object* duration=nullptr;int hold=json_object_object_get_ex(j.get(),"duration",&duration)?std::clamp<int>(json_object_get_int(duration),0,10000):0;
+    for(int i=0;i<num(j.get(),"count");++i){pointer(ButtonPress,x,y,button,0);if(hold)std::this_thread::sleep_for(std::chrono::milliseconds(hold));pointer(ButtonRelease,x,y,button,1u<<(7+button));}}
+   else if(press){auto b=str(j.get(),"button");pointer(ButtonPress,x,y,b=="left"?1:b=="middle"?2:3,0);}
    else if(op=="move")pointer(MotionNotify,x,y,0,0);
    else if(op=="drag"){
     double ex=num(j.get(),"end_x"),ey=num(j.get(),"end_y");json_object* destination=nullptr;
