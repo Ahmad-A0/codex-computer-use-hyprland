@@ -153,7 +153,11 @@ render between chunks. Applications without AT-SPI still require screenshots;
 this does not synthesize a terminal accessibility tree.
 
 `getApp` reuses a running application and launches only when needed, waiting for
-its initial window. `launch_app` acknowledges desktop launch success or failure;
+its initial window. Like a macOS background launch, a new app opens without focus
+and silently on the `codex` workspace, leaving your layout untouched; switch to
+that workspace to watch or use it. `CODEX_HYPRLAND_LAUNCH_WORKSPACE` selects
+another workspace (for example `special:codex` or `3`), and `current` opens it on
+your current workspace. `launch_app` acknowledges desktop launch success or failure;
 it does not promise a new window. Use normal app UI actions to create additional
 windows, and compare inventories before treating a window as disposable.
 

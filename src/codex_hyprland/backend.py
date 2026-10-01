@@ -523,7 +523,14 @@ class Backend:
             env.update(LAUNCH_ENVIRONMENT)
             command = shlex.join(["env", *(f"{k}={v}" for k, v in env.items()), sys.executable,
                                   "-m", "codex_hyprland.launch", matches[0].get_id(), str(status)])
-            command = "[no_initial_focus on; focus_on_activate off] " + command
+            # Like a macOS background launch, a new app must not disturb the user's
+            # layout: by default it opens silently on the "codex" workspace.
+            # CODEX_HYPRLAND_LAUNCH_WORKSPACE=current keeps the current workspace.
+            workspace = guards.setting("LAUNCH_WORKSPACE", "name:codex").strip()
+            if any(c in workspace for c in ";[]\n"):
+                raise ValueError("Invalid CODEX_HYPRLAND_LAUNCH_WORKSPACE")
+            placement = "" if workspace in ("", "current") else f"workspace {workspace} silent; "
+            command = f"[{placement}no_initial_focus on; focus_on_activate off] " + command
             if self.hypr.provider() == self.hypr.LUA:
                 result = self.hypr._run("dispatch", "hl.dsp.exec_cmd(" + self.hypr.lua_str(command) + ")")
                 if result.strip() != "ok":
