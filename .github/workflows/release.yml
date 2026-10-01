@@ -1,0 +1,69 @@
+name: release
+# Publishing a release (normally the draft from draft-release.yml) attaches a
+# source tarball and an AUR PKGBUILD built and checked in an Arch container.
+# Pushing to the AUR is off until the AUR_PUBLISH variable is "true" and the
+# AUR_SSH_PRIVATE_KEY secret exists.
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - run: pacman -Syu --noconfirm --needed base-devel git github-cli namcap
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Source tarball, PKGBUILD and .SRCINFO
+        run: |
+          git config --global --add safe.directory "$PWD"
+          version=${TAG#v}
+          name=codex-computer-use-hyprland
+          git archive --prefix="$name-$version/" -o "$name-$version.tar.gz" "$TAG"
+          url="$SERVER/$REPO/releases/download/$TAG/$name-$version.tar.gz"
+          scripts/release/pkgbuild.sh "$version" "$url" "$(sha256sum "$name-$version.tar.gz" | cut -d' ' -f1)" > PKGBUILD
+          cp packaging/aur/*.install . 2>/dev/null || true
+          # makepkg refuses root; build as an unprivileged user from the local tarball.
+          useradd -m builder && chown -R builder .
+          su builder -c "makepkg --printsrcinfo > .SRCINFO && makepkg --nodeps --nobuild --skipinteg"
+          namcap PKGBUILD || true
+          gh release upload "$TAG" "$name-$version.tar.gz" PKGBUILD .SRCINFO --clobber
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          SERVER: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur
+          path: |
+            PKGBUILD
+            .SRCINFO
+            *.install
+
+  aur:
+    needs: package
+    if: vars.AUR_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: aur
+          path: aur
+      - run: |
+          test -n "$KEY" || { echo 'AUR_SSH_PRIVATE_KEY is not set'; exit 1; }
+          mkdir -p ~/.ssh && printf '%s\n' "$KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur'
+          git clone "ssh://aur@aur.archlinux.org/$PKG.git" pkg
+          cp aur/PKGBUILD aur/.SRCINFO pkg/ && cp aur/*.install pkg/ 2>/dev/null || true
+          cd pkg && git add -A && git -c user.name="$NAME" -c user.email="$EMAIL" commit -m "Update to ${TAG#v}" && git push
+        env:
+          KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          PKG: ${{ vars.AUR_PACKAGE || 'codex-computer-use-hyprland' }}
+          NAME: ${{ vars.AUR_COMMIT_NAME || 'github-actions' }}
+          EMAIL: ${{ vars.AUR_COMMIT_EMAIL || 'github-actions@users.noreply.github.com' }}
+          TAG: ${{ github.event.release.tag_name }}

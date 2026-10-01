@@ -1,0 +1,99 @@
+name: watch-upstream
+# Daily: when OpenAI's ChatGPT/Codex package or Arch's Hyprland changes, run the
+# end-to-end suite against the new versions. Green: record them in
+# upstream.json. Red: open (or update) an issue and start the fix agent.
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Test even if upstream versions are unchanged
+        type: boolean
+        default: false
+concurrency:
+  group: watch-upstream
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      latest: ${{ steps.compare.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: compare
+        run: |
+          latest=$(scripts/release/upstream.sh)
+          tested=$(python3 -c 'import json; print(json.dumps(json.load(open("upstream.json"))["tested"].get("versions", {}), separators=(",", ":"), sort_keys=True))')
+          current=$(echo "$latest" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), separators=(",", ":"), sort_keys=True))')
+          echo "latest=$current" >> "$GITHUB_OUTPUT"
+          if [ "$current" != "$tested" ] || [ "${{ inputs.force }}" = true ]; then echo changed=true; else echo changed=false; fi >> "$GITHUB_OUTPUT"
+          echo "Tested: $tested  Latest: $current"
+
+  test:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit
+
+  record:
+    needs: [check, test]
+    if: needs.check.outputs.changed == 'true' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          python3 - <<'PY'
+          import json, os, datetime
+          data = json.load(open('upstream.json'))
+          data['tested'] = {'versions': json.loads(os.environ['LATEST']),
+                            'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'),
+                            'run': os.environ['RUN']}
+          open('upstream.json', 'w').write(json.dumps(data, indent=2) + '\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "Tested with $(echo "$LATEST" | tr -d '{}"')"
+          git push
+        env:
+          LATEST: ${{ needs.check.outputs.latest }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  report:
+    needs: [check, test]
+    if: always() && needs.check.outputs.changed == 'true' && needs.test.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    outputs:
+      issue: ${{ steps.issue.outputs.number }}
+    steps:
+      - id: issue
+        run: |
+          body="The end-to-end suite failed against new upstream versions: \`$LATEST\`.
+
+          Run: $RUN (artifacts include the HTML report with screenshots)."
+          gh label create upstream-break --color d93f0b --description 'An upstream update broke the provider' 2>/dev/null || true
+          number=$(gh issue list --label upstream-break --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment "$number" --body "$body"
+          else number=$(gh issue create --label upstream-break --title "Upstream update broke the provider" --body "$body" | grep -o '[0-9]*$'); fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LATEST: ${{ needs.check.outputs.latest }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  fix:
+    needs: report
+    if: always() && needs.report.outputs.issue != ''
+    uses: ./.github/workflows/fix.yml
+    with:
+      issue: ${{ needs.report.outputs.issue }}
+      failed_run: ${{ github.run_id }}
+    secrets: inherit
