@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "doctor": ".venv/bin/sky-hyprland doctor",
-    "cua": "node scripts/launch.mjs"
+    "doctor": "./doctor",
+    "install:provider": "./install",
+    "cua": "./bin/cua-repl-hyprland"
   }
 }

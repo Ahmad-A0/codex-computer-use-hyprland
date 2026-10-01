@@ -7,10 +7,13 @@ name = "codex-computer-use-hyprland"
 version = "0.1.0"
 description = "Hyprland backend for the unchanged Codex Sky and cua_repl APIs"
 requires-python = ">=3.11"
-dependencies = ["markdown-it-py==4.2.0"]
+dependencies = ["markdown-it-py==4.2.0", "tomlkit>=0.13.3,<1"]
 
 [project.scripts]
 sky-hyprland = "codex_hyprland.protocol:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv]
+python-downloads = "never"

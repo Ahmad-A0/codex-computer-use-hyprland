@@ -25,15 +25,21 @@ class Accessibility:
 
     def root(self, client):
         desktop = self.api.get_desktop(0)
+        if desktop is None:
+            return None
         desktop.clear_cache()
         frames = []
         for i in range(desktop.get_child_count()):
             app = desktop.get_child_at_index(i)
+            if app is None:
+                continue
             app.clear_cache()
             if app.get_process_id() != client["pid"]:
                 continue
             for j in range(app.get_child_count()):
                 frame = app.get_child_at_index(j)
+                if frame is None:
+                    continue
                 frame.clear_cache()
                 if frame.get_state_set().contains(self.api.StateType.DEFUNCT):
                     continue
@@ -328,3 +334,19 @@ class Accessibility:
         if not self.api.EditableText.insert_text(obj, start, value, len(value.encode('utf-8'))):
             raise RuntimeError('Application refused Unicode text insertion')
         obj.set_caret_offset(start + len(value))
+
+    def focused_terminal(self, client):
+        """Identify terminal controls without changing the focused element."""
+        self.snapshot(client)
+        focused = [obj for obj, _, _ in self.elements.get(client['address'], {}).values()
+                   if obj.get_state_set().contains(self.api.StateType.FOCUSED)]
+        if len(focused) != 1:
+            return False
+        obj = focused[0]
+        for _ in range(64):
+            if obj is None:
+                break
+            if obj.get_role_name() == 'terminal':
+                return True
+            obj = obj.get_parent()
+        return False

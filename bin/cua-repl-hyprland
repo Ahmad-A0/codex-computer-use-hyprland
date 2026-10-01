@@ -1,5 +1,5 @@
-#!/usr/bin/env node
-import('../scripts/launch.mjs').then(({ launch }) => launch()).catch(error => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+#!/bin/sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$project_dir/scripts/runtime.sh"
+exec "$CODEX_CUA_RUNTIME/bin/node" "$project_dir/scripts/launch.mjs"

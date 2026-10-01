@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$project_dir"
+case "${1:-}" in
+  ''|--project) ;;
+  *) echo 'Usage: ./install [--project]' >&2; exit 1 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo 'Usage: ./install [--project]' >&2
+  exit 1
+fi
+. "$project_dir/scripts/runtime.sh"
+./scripts/setup.sh
+./scripts/build-native.sh
+"$CODEX_CUA_RUNTIME/bin/node" scripts/configure.mjs --browser |
+  .venv/bin/python scripts/register-provider.py "$@"
+echo 'Installed. Start a new Codex session; the native plugin loads on first use.'

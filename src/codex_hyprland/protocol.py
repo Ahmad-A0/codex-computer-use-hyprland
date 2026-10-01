@@ -20,6 +20,11 @@ PARAMETERS = {
     "move": {"window", "x", "y"}, "move_relative": {"dx", "dy"},
 }
 MAX_LINE = 2 * 1024 * 1024
+INPUT_COMMANDS = {
+    'click', 'scroll', 'drag', 'type_text', 'press_key', 'select_text',
+    'set_value', 'paste', 'perform_secondary_action', 'activate_window',
+    'move', 'move_relative',
+}
 
 
 def dispatch(backend, request):
@@ -33,7 +38,13 @@ def dispatch(backend, request):
         raise ValueError(f"Unsupported Sky Linux command: {method}")
     if not isinstance(params, dict) or params.keys() - PARAMETERS[method]:
         raise ValueError(f"Unsupported parameters for {method}")
-    return getattr(backend, method)(params)
+    try:
+        return getattr(backend, method)(params)
+    finally:
+        # Even a failed action may have delivered partial input. Settle the next
+        # observation, never replay the action or delay every inventory request.
+        if method in INPUT_COMMANDS:
+            backend.defer_observation(params)
 
 
 def serve(backend, source, sink):

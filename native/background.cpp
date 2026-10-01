@@ -150,16 +150,19 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             while(offset<data.size()){auto n=read(file.fd,data.data()+offset,data.size()-offset);if(n<0 && errno==EINTR)continue;require(n>0,"Cannot read request file");offset+=n;}
             j.reset(json_tokener_parse(data.c_str()));require(bool(j),"Invalid request file JSON");op=str(j.get(),"op");
         }
-        if(op=="status") return std::string("{\"ok\":true,\"version\":2,\"build\":\"")+CODEX_BUILD_ID+"\",\"offers\":"+std::to_string(Clipboard::offers.size())+",\"busy\":"+(Drag::origin || !Clipboard::transfers.empty() || Activation::active()?"true":"false")+"}";
-        if(op=="drain"){require(!Drag::origin && !Activation::active(),"Input still active");Popups::dismiss();Clipboard::drain();Routing::restore();return R"({"ok":true})";}
+        if(op=="status") return std::string("{\"ok\":true,\"version\":2,\"build\":\"")+CODEX_BUILD_ID+"\",\"offers\":"+std::to_string(Clipboard::offers.size())+",\"busy\":"+(Drag::origin || !Clipboard::transfers.empty() || !Capture::leases.empty() || Activation::active()?"true":"false")+"}";
+        if(op=="drain"){require(!Drag::origin && !Activation::active() && Capture::leases.empty(),"Input or capture still active");Popups::dismiss();Clipboard::drain();Routing::restore();return R"({"ok":true})";}
         if(op=="drag_status" || op=="drag_end"){if(op=="drag_end"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");require(!g_pInputManager->hasHeldButtons(),"Physical mouse button held");}return Drag::state(op=="drag_end");}
         if(op=="activation_end"){Activation::end();return R"({"ok":true})";}
         if(op=="ax_probe_end"){Routing::restore();return R"({"ok":true})";}
         if(op=="drag_cancel"){Drag::cancel();return R"({"ok":true})";}
         if(op=="paste_status"||op=="paste_end") return Clipboard::state(j.get(),op=="paste_end");
+        if(op=="refresh_end"){Capture::release(num(j.get(),"token"));return R"({"ok":true})";}
         auto window=Desktop::viewState()->query().selector("address:"+str(j.get(),"address")).runWindow();
         require(window && Desktop::View::validMapped(window),"Target is not mapped");
 
+        if(op=="refresh_begin"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::begin(window);}
+        if(op=="refresh"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::refresh(window);}
         if(op=="popup_capture"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::popups(window,j.get());}
         require(window->acceptsInput(),"Target refuses input");
         require(!g_pSessionLockManager->isSessionLocked(),"Session locked");
@@ -174,6 +177,9 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             json_object_object_add(reply.get(),"display",json_object_new_string(getenv("DISPLAY")));
             json_object_object_add(reply.get(),"compositor_pid",json_object_new_int64(getpid()));
             json_object_object_add(reply.get(),"clipboard_empty",json_object_new_boolean(!g_pSeatManager->m_selection.currentSelection));
+            auto selection=g_pSeatManager->m_selection.currentSelection.lock();
+            json_object_object_add(reply.get(),"clipboard_wayland",json_object_new_boolean(selection && selection->type()==DATA_SOURCE_TYPE_WAYLAND));
+            json_object_object_add(reply.get(),"clipboard_identity",json_object_new_string(std::to_string(reinterpret_cast<uintptr_t>(selection.get())).c_str()));
             return json_object_to_json_string_ext(reply.get(),JSON_C_TO_STRING_PLAIN);
         }
         if(op=="prepare_action"){
@@ -256,10 +262,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     require(std::string(__hyprland_api_get_hash())==__hyprland_api_get_client_hash(),"Hyprland headers do not match running compositor");
     require(bool(HyprlandAPI::registerHyprCtlCommand(plugin,SHyprCtlCommand{.name="codex-background",.exact=false,.fn=handle})),"Cannot register background command");
     Clipboard::setup();
+    Capture::setup();
     Routing::setup();
     Drag::setup(plugin);
     Popups::setup(plugin);
     Activation::setup(plugin);
     return {"codex-background","Window-targeted input without compositor focus or cursor movement","Codex Hyprland provider","0.1.0"};
 }
-APICALL EXPORT void PLUGIN_EXIT() { Activation::clear(); Popups::clear(); Drag::clear(); Routing::clear(); Clipboard::clear(); }
+APICALL EXPORT void PLUGIN_EXIT() { Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Routing::clear(); Clipboard::clear(); }

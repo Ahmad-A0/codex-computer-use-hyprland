@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 import time
 from . import desktop as hyprctl
+from .paths import project_root
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = project_root()
 
 
 def status():

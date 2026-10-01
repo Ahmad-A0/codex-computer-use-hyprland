@@ -1,5 +1,50 @@
 // Render only a target's popup surfaces into isolated framebuffers.
 namespace Capture {
+struct Lease { PHLWINDOWREF window; uint32_t until; };
+inline std::map<uint64_t,Lease> leases;
+inline uint64_t serial=0;
+inline wl_event_source* watchdog=nullptr;
+inline void release(uint64_t token){
+    auto it=leases.find(token);if(it==leases.end())return;
+    auto window=it->second.window.lock();leases.erase(it);
+    if(!window)return;
+    for(auto& [_,lease]:leases)if(lease.window.lock()==window)return;
+    window->setSuspended(window->isHidden() || !window->m_workspace || !window->m_workspace->m_visible);
+}
+inline std::string begin(PHLWINDOW window){
+    require(leases.size()<64,"Too many concurrent capture requests");
+    auto token=++serial;leases.emplace(token,Lease{window,now()+5000});
+    window->setSuspended(false);
+    return "{\"ok\":true,\"token\":"+std::to_string(token)+"}";
+}
+inline void setup(){
+    watchdog=wl_event_loop_add_timer(wl_display_get_event_loop(g_pCompositor->m_wlDisplay),[](void*){
+        std::vector<uint64_t> expired;for(auto& [token,lease]:leases)if(int32_t(lease.until-now())<=0)expired.push_back(token);
+        for(auto token:expired)release(token);
+        wl_event_source_timer_update(watchdog,250);return 0;
+    },nullptr);
+    require(watchdog,"Cannot arm capture cleanup timer");wl_event_source_timer_update(watchdog,250);
+}
+inline void clear(){if(watchdog){wl_event_source_remove(watchdog);watchdog=nullptr;}while(!leases.empty())release(leases.begin()->first);}
+// A hidden client can be waiting for a frame callback indefinitely. Service
+// only this window's surfaces; do not show it or alter the compositor seat.
+inline std::string refresh(PHLWINDOW window){
+    for(auto& [_,lease]:leases)if(lease.window.lock()==window){window->setSuspended(false);break;}
+    size_t callbacks=0;
+    auto pulse=[&](SP<CWLSurfaceResource> root){
+        if(!root)return;
+        root->breadthfirst([&](SP<CWLSurfaceResource> surface,const Vector2D&,void*){
+            callbacks+=surface->m_current.callbacks.size();
+            surface->frame(Time::steadyNow());
+        },nullptr);
+        wl_client_flush(root->client());
+    };
+    pulse(window->wlSurface()->resource());
+    if(window->m_popupHead)window->m_popupHead->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
+        if(popup->m_mapped && popup->wlSurface())pulse(popup->wlSurface()->resource());
+    },nullptr);
+    return "{\"ok\":true,\"callbacks\":"+std::to_string(callbacks)+"}";
+}
 class MemoryBuffer final : public IHLBuffer {
  public:
     std::vector<uint8_t> bytes;

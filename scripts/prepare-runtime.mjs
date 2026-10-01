@@ -1,45 +1,74 @@
-// Build a private, version-checked runtime overlay. Installed packages are read-only.
+// Build a private runtime overlay when the required patch sites still match.
 import {cpSync, readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, rmSync, readdirSync, symlinkSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const cuaFile='dist/lib/js/oai_js_cua/src/tinysky_alt/create_tinysky_alt.js';
+const appFile='dist/lib/js/oai_js_cua/src/tinysky_alt/bind_linux_app.js';
 const linux='dist/project/cua/sky_js/src/targets/linux';
-const revisions={cua:'0.2.5',sky:'0.7.1'};
-export function prepareRuntime(runtime) {
+const packages=['cua','sky'];
+const additions='resolve_app:parity(x,"resolve_app"),select_text:parity(x,"select_text"),set_value:parity(x,"set_value"),paste:parity(x,"paste"),';
+const patches=[
+  ['cua',appFile,'if("number"==typeof i)throw new Error("Linux scroll accepts { pixels }, not pages.");',''],
+  ['cua',appFile,'void 0!==i&&(n.pixels=o(i.pixels)),s.scroll(n)','"number"==typeof i?n.pages=o(i):void 0!==i?n.pixels=o(i.pixels):n.pages=1,s.scroll(n)'],
+  ['cua',appFile,'selectText(){return e(this,void 0,void 0,(function*(){throw new Error("selectText is unavailable on Linux.")}))},setValue(){return e(this,void 0,void 0,(function*(){throw new Error("setValue is unavailable on Linux; use click, pressKey, and typeText.")}))},paste:(e,t)=>(r(t,"Linux"),s.type_text({window:c,text:e}))',
+    'selectText:(e,t,i)=>s.select_text({window:c,element_id:String(e),text:t,prefix:i?.prefix,suffix:i?.suffix,selection_type:i?.selectionType??"text"}),setValue:(e,t)=>s.set_value({window:c,element_id:String(e),value:t}),paste:(e,t)=>s.paste({window:c,text:e,format:t?.format??"text"})'],
+  ['cua',cuaFile,'const i=p(t,"linux"),e=(yield y.list_windows())','const i="string"==typeof t?(yield y.resolve_app({app:t})).id:p(t,"linux"),e=(yield y.list_windows())'],
+  ...packages.map(pkg=>[pkg,linux+'/create_client.js','A={target:"linux",','A={target:"linux",'+additions]),
+];
+function replacePatch(source,pkg,path,from,to) {
+  if(source.split(from).length!==2) throw new Error(`Runtime patch no longer matches @oai/${pkg}/${path}. Update the adapter for this source layout.`);
+  return source.replace(from,to);
+}
+export function reviewRuntime(runtime) {
   const source=join(runtime,'lib/node_modules/@oai');
-  const input={};
-  for(const [pkg,version] of Object.entries(revisions)) {
+  const digest=createHash('sha256').update(resolve(runtime)).update(readFileSync(fileURLToPath(import.meta.url)));
+  const revisions={};
+  for(const pkg of packages) {
     const meta=JSON.parse(readFileSync(join(source,pkg,'package.json'),'utf8'));
-    if(meta.version!==version) throw new Error(`Runtime parity patch requires @oai/${pkg} ${version}; found ${meta.version}. Review the upstream changes before updating the patch.`);
-    input[pkg]=readFileSync(join(source,pkg,pkg==='cua'?cuaFile:linux+'/create_client.js'),'utf8');
+    revisions[pkg]=meta.version;
+    // Invalidate the copy when any shipped file changes, including browser
+    // code and documentation whose package versions may remain the same.
+    function hashFiles(dir,relative='') {
+      for(const entry of readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))) {
+        const path=join(dir,entry.name),label=join(relative,entry.name);
+        if(entry.isDirectory()) hashFiles(path,label);
+        else if(entry.isFile()) digest.update(pkg+'/'+label).update(readFileSync(path));
+      }
+    }
+    hashFiles(join(source,pkg));
   }
-  const hash=createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).update(JSON.stringify(input)).digest('hex').slice(0,20);
+  // Validate only the code we need to replace. Versions remain diagnostic;
+  // unrelated source changes invalidate the cache without rejecting the bundle.
+  const pending=new Map();
+  for(const [pkg,path,from,to] of patches) {
+    const key=join(source,pkg,path);
+    const text=pending.get(key)??readFileSync(key,'utf8');
+    pending.set(key,replacePatch(text,pkg,path,from,to));
+  }
+  const hash=digest.digest('hex').slice(0,20);
+  return {source,hash,revisions};
+}
+export function prepareRuntime(runtime) {
+  const {source,hash,revisions}=reviewRuntime(runtime);
   const output=join(root,'build','runtime',hash,'node_modules');
   if(existsSync(join(output,'parity-ready.json'))) return output;
   const temp=output+`.${process.pid}.tmp`;mkdirSync(join(temp,'@oai'),{recursive:true});
-  for(const pkg of Object.keys(revisions)) cpSync(join(source,pkg),join(temp,'@oai',pkg),{recursive:true});
+  for(const pkg of packages) cpSync(join(source,pkg),join(temp,'@oai',pkg),{recursive:true});
   // Preserve resolution of the upstream runtime's external dependencies.
   for(const entry of readdirSync(resolve(source,'..'))) {
     if(entry!=='@oai') symlinkSync(join(resolve(source,'..'),entry),join(temp,entry));
   }
   for(const entry of readdirSync(source)) {
-    if(!(entry in revisions)) symlinkSync(join(source,entry),join(temp,'@oai',entry));
+    if(!packages.includes(entry)) symlinkSync(join(source,entry),join(temp,'@oai',entry));
   }
   function patch(pkg,path,from,to) {
     const target=join(temp,'@oai',pkg,path),s=readFileSync(target,'utf8');
-    if(s.split(from).length!==2) throw new Error(`Upstream source mismatch: ${pkg}/${path}`);
-    writeFileSync(target,s.replace(from,to));
+    writeFileSync(target,replacePatch(s,pkg,path,from,to));
   }
-  patch('cua',cuaFile,'if("number"==typeof r)throw new Error("Linux scroll accepts { pixels }, not pages.");','');
-  patch('cua',cuaFile,'void 0!==r&&(n.pixels=h(r.pixels)),t.scroll(n)','"number"==typeof r?n.pages=h(r):void 0!==r?n.pixels=h(r.pixels):n.pages=1,t.scroll(n)');
-  patch('cua',cuaFile,'selectText(){return e(this,void 0,void 0,(function*(){throw new Error("selectText is unavailable on Linux.")}))},setValue(){return e(this,void 0,void 0,(function*(){throw new Error("setValue is unavailable on Linux; use click, pressKey, and typeText.")}))},paste:(e,o)=>(m(o,"Linux"),t.type_text({window:i,text:e}))',
-    'selectText:(e,o,r)=>t.select_text({window:i,element_id:String(e),text:o,prefix:r?.prefix,suffix:r?.suffix,selection_type:r?.selectionType??"text"}),setValue:(e,o)=>t.set_value({window:i,element_id:String(e),value:o}),paste:(e,o)=>t.paste({window:i,text:e,format:o?.format??"text"})');
-  patch('cua',cuaFile,'const i=p(t,"linux"),o=(yield T.list_windows())','const i="string"==typeof t?(yield T.resolve_app({app:t})).id:p(t,"linux"),o=(yield T.list_windows())');
-  const additions='resolve_app:parity(u,"resolve_app"),select_text:parity(u,"select_text"),set_value:parity(u,"set_value"),paste:parity(u,"paste"),';
-  for(const pkg of ['cua','sky']) {
-    patch(pkg,linux+'/create_client.js','y={target:"linux",','y={target:"linux",'+additions);
+  for(const args of patches) patch(...args);
+  for(const pkg of packages) {
     const target=join(temp,'@oai',pkg,linux,'create_client.js');
     writeFileSync(target,'import {sky_linux as parityTransport} from "./sky_linux.js";\nfunction parity(options, command) { return async function(input) { await options.action_settler.wait(); const result=await parityTransport(command,{options,input:options.element_ids.resolve(input)}); options.action_settler.defer(); if(command==="resolve_app") return JSON.parse(result); }; }\n'+readFileSync(target,'utf8'));
   }
@@ -54,10 +83,9 @@ export function prepareRuntime(runtime) {
       ['`selectText` is unavailable on Linux and Windows. `setValue` is unavailable on Linux. These methods throw before sending input. Use the supported bound actions to edit the UI and verify the result.', 'This Hyprland provider implements `selectText` and `setValue` through AT-SPI text, editable-text, and value interfaces. Controls without the required interface return a specific error. Windows selectText remains unavailable.'],
     ];
     for(const [from,to] of replacements) {
-      if(!documentation.includes(from)) throw new Error('Upstream documentation changed: '+from);
       documentation=documentation.replace(from,to);
     }
-    documentation += '\n\nOn this Hyprland provider, app screenshots include owned popups. Coordinate actions use the latest app screenshot origin; accessibility-only observations retain that mapping. Identical windows are bound using geometry and, when necessary, temporary client-side focus notifications, without changing compositor focus.\n';
+    documentation += '\n\nHyprland provider capabilities: getApp accepts names and IDs and supports background launch. selectText and setValue use AT-SPI. paste supports text, HTML and Markdown. scroll accepts viewport pages or pixels. These provider capabilities take precedence over generic Linux restrictions above.\n\nOn this Hyprland provider, app screenshots include owned popups. Coordinate actions use the latest app screenshot origin; accessibility-only observations retain that mapping. Identical windows are bound using geometry and, when necessary, temporary client-side focus notifications, without changing compositor focus.\n\nWhen asked to open a new window, record listWindows() before launch, refresh it after launch, and bind only a newly observed matching window ID. A launch may reuse an existing window; never label an existing window as newly created or close it as cleanup. If no new ID appears, inspect the application before proceeding. Screenshots refresh background rendering without switching workspaces. Paste uses the application category’s normal keyboard shortcut; do not assume Ctrl+V is paste in a terminal.\n';
     writeFileSync(docs,documentation);
   }
   writeFileSync(join(temp,'parity-ready.json'),JSON.stringify({revisions,hash},null,2));
@@ -65,4 +93,4 @@ export function prepareRuntime(runtime) {
   try {renameSync(temp,output);} catch(error) {rmSync(temp,{recursive:true,force:true});if(!existsSync(join(output,'parity-ready.json')))throw error;}
   return output;
 }
-if(process.argv[1]===fileURLToPath(import.meta.url)) console.log(prepareRuntime(process.env.CODEX_CUA_RUNTIME??'/opt/codex-desktop/resources/cua_node'));
+if(process.argv[1]===fileURLToPath(import.meta.url)) console.log(prepareRuntime(process.env.CODEX_CUA_RUNTIME??'/usr/lib/chatgpt/resources/cua_node'));

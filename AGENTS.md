@@ -1,8 +1,12 @@
 Preserve the official `cua_repl` / `node_repl` JavaScript API. Implement platform
 differences below Sky's Linux executable protocol where possible. The user has
-authorized narrow frontend patches for parity: keep them version-checked in a
-private runtime copy, preserve public signatures, and do not edit installed Codex
+authorized narrow frontend patches for parity: validate their required patch
+sites in a private runtime copy, preserve public signatures, and do not edit installed Codex
 packages or monkey-patch live cua objects.
+
+Runtime versions are diagnostic. Do not gate on exact package versions,
+whole-file hashes, or documentation wording. Source hashes invalidate cached
+copies. Retain the Hyprland ABI check and required code-patch match checks.
 
 Do not add unit tests (user request). Validate changes with syntax checks and
 bounded live runs against a disposable native application. Do not use the user's

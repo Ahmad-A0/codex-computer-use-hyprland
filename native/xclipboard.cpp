@@ -36,18 +36,36 @@ int main(){
    if(types.type==None){
     // A fresh XWM owns CLIPBOARD even with no Wayland selection. Verify the
     // owner process, rather than mistaking an unresponsive app for empty data.
-    json_object *empty=nullptr,*pid=nullptr;bool verifiedEmpty=false;
-    if(json_object_object_get_ex(request,"clipboard_empty",&empty)&&json_object_get_boolean(empty)&&json_object_object_get_ex(request,"compositor_pid",&pid)){
+    json_object *empty=nullptr,*pid=nullptr,*snapshot=nullptr;bool compositorOwner=false;
+    if(json_object_object_get_ex(request,"compositor_pid",&pid)){
      XResClientIdSpec spec{previousOwner,XRES_CLIENT_ID_PID_MASK};long count=0;XResClientIdValue* ids=nullptr;
      if(XResQueryClientIds(d,1,&spec,&count,&ids)==Success){
-      for(long i=0;i<count;++i)if(XResGetClientIdType(&ids[i])==XRES_CLIENT_ID_PID&&XResGetClientPid(&ids[i])==json_object_get_int64(pid))verifiedEmpty=true;
+      for(long i=0;i<count;++i)if(XResGetClientIdType(&ids[i])==XRES_CLIENT_ID_PID&&XResGetClientPid(&ids[i])==json_object_get_int64(pid))compositorOwner=true;
       XResClientIdsDestroy(count,ids);
      }
     }
-    if(verifiedEmpty){types.type=XA_ATOM;types.format=32;}
+    if(compositorOwner && json_object_object_get_ex(request,"wayland_snapshot",&snapshot)){
+     need(json_object_is_type(snapshot,json_type_object),"Invalid Wayland clipboard snapshot");
+     auto nibble=[](char c){if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;throw std::runtime_error("Invalid snapshot encoding");};
+     json_object_object_foreach(snapshot,mime,encoded){
+      need(json_object_is_type(encoded,json_type_string),"Invalid snapshot bytes");
+      std::string hex=json_object_get_string(encoded);need(hex.size()%2==0 && hex.size()<=64*1024*1024,"Snapshot format exceeds limit");
+      Value value;value.type=atom(mime);value.format=8;value.data.reserve(hex.size()/2);
+      for(size_t n=0;n<hex.size();n+=2)value.data.push_back((nibble(hex[n])<<4)|nibble(hex[n+1]));
+      snapshotBytes+=value.data.size();need(snapshotBytes<=64*1024*1024,"Clipboard snapshot exceeds total limit");previous[value.type]=std::move(value);
+     }
+     auto plain=previous.find(atom("text/plain;charset=utf-8"));if(plain!=previous.end()){previous[atom("UTF8_STRING")]=plain->second;previous[atom("UTF8_STRING")].type=atom("UTF8_STRING");}
+     types.type=XA_ATOM;types.format=32;
+    }else if(compositorOwner && json_object_object_get_ex(request,"clipboard_empty",&empty)&&json_object_get_boolean(empty)){types.type=XA_ATOM;types.format=32;}
    }
    need(types.type==XA_ATOM&&types.format==32,"Clipboard owner did not enumerate formats");need(types.count()<=256,"Clipboard advertises too many formats");auto* values=reinterpret_cast<const unsigned long*>(types.data.data());for(size_t i=0;i<types.count();++i){Atom t=values[i];if(t==targets||t==timestamp||t==multiple||t==save)continue;need(Clock::now()<snapshotDeadline,"Clipboard snapshot timed out");auto v=convert(t);snapshotBytes+=v.data.size();need(snapshotBytes<=64*1024*1024,"Clipboard snapshot exceeds total limit");if(v.type!=None)previous[t]=std::move(v);}}
   need(XGetSelectionOwner(d,clipboard)==previousOwner,"Clipboard changed during snapshot; paste not started");
+  json_object* snapshot=nullptr;
+  if(json_object_object_get_ex(request,"wayland_snapshot",&snapshot)){
+   std::cout<<"{\"ok\":true,\"snapshot_ready\":true}"<<std::endl;
+   std::string confirmation;need(bool(std::getline(std::cin,confirmation))&&confirmation=="own","Clipboard snapshot was not confirmed");
+   need(XGetSelectionOwner(d,clipboard)==previousOwner,"Clipboard changed before paste; paste not started");
+  }
   json_object_object_foreach(items,key,value){need(json_object_is_type(value,json_type_string),"Invalid clipboard content");auto* bytes=json_object_get_string(value);auto n=json_object_get_string_len(value);need(n<=1024*1024,"Paste format exceeds 1 MiB");Atom t=atom(key);current[t]={t,8,{reinterpret_cast<const unsigned char*>(bytes),reinterpret_cast<const unsigned char*>(bytes)+n}};}
   auto plain=current.find(atom("text/plain;charset=utf-8"));if(plain!=current.end()){current[atom("UTF8_STRING")]=plain->second;current[atom("UTF8_STRING")].type=atom("UTF8_STRING");}
   json_object_put(request);

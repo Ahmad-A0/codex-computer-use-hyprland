@@ -1,6 +1,7 @@
 """Targeted Wayland offers and format-preserving X11 clipboard transactions."""
 from html.parser import HTMLParser
 import time
+import tempfile
 from . import background
 
 class PlainText(HTMLParser):
@@ -23,7 +24,9 @@ class PlainText(HTMLParser):
             self.parts.append(data)
 
 
-def paste(client, value, format):
+def paste(client, value, format, trigger=None):
+    if trigger is None:
+        trigger = lambda: background.send(client, 'key', key='v', modifiers=['Control'])
     items = {}
     if format == 'md':
         from markdown_it import MarkdownIt
@@ -41,10 +44,10 @@ def paste(client, value, format):
         plain = value
     items.update({'text/plain;charset=utf-8': plain, 'text/plain': plain})
     if client.get('xwayland'):
-        return paste_x11(client, items)
+        return paste_x11(client, items, trigger)
     token = background.send(client, 'paste_begin', items=items)['token']
     try:
-        background.send(client, 'key', key='v', modifiers=['Control'])
+        trigger()
         deadline = time.monotonic() + 4
         last = None
         quiet = time.monotonic()
@@ -63,13 +66,35 @@ def paste(client, value, format):
         background.send(client, 'paste_end', token=token)
 
 
-def paste_x11(client, items):
+def paste_x11(client, items, trigger):
     import json
     import select
     import subprocess
     from pathlib import Path
     info = background.send(client, 'x11_info')
-    helper = Path(__file__).resolve().parents[2] / 'build/codex-xclipboard'
+    snapshot = {}
+    if info.get('clipboard_wayland'):
+        # XWM rejects unfocused X clients reading a Wayland-owned selection.
+        # Read through Wayland instead; the helper accepts this snapshot only
+        # after verifying that XWM itself owns the X selection.
+        types = subprocess.run(['wl-paste', '--list-types'], check=True,
+                               capture_output=True, timeout=3).stdout.decode().splitlines()
+        if len(types) > 256:
+            raise RuntimeError('Clipboard advertises too many formats')
+        total = 0
+        for mime in dict.fromkeys(types):
+            with tempfile.TemporaryFile() as data:
+                subprocess.run(['wl-paste', '--no-newline', '--type', mime],
+                               check=True, stdout=data, stderr=subprocess.DEVNULL, timeout=3)
+                size = data.tell();total += size
+                if size > 32*1024*1024 or total > 64*1024*1024:
+                    raise RuntimeError('Clipboard snapshot exceeds size limit')
+                data.seek(0);snapshot[mime] = data.read().hex()
+        if background.send(client, 'x11_info')['clipboard_identity'] != info['clipboard_identity']:
+            raise RuntimeError('Clipboard changed during snapshot; paste not started')
+        info['wayland_snapshot'] = snapshot
+    from .paths import project_root
+    helper = project_root() / 'build/codex-xclipboard'
     process = subprocess.Popen([str(helper)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
     ready = False
@@ -86,8 +111,16 @@ def paste_x11(client, items):
     try:
         process.stdin.write(json.dumps({**info, 'items': items})+'\n')
         process.stdin.flush()
-        ready = reply().get('ready', False)
-        background.send(client, 'key', key='v', modifiers=['Control'])
+        initial = reply()
+        if initial.get('snapshot_ready'):
+            if background.send(client, 'x11_info')['clipboard_identity'] != info['clipboard_identity']:
+                raise RuntimeError('Clipboard changed before paste; paste not started')
+            process.stdin.write('own\n');process.stdin.flush()
+            initial = reply()
+        ready = initial.get('ready', False)
+        if not ready:
+            raise RuntimeError('Clipboard owner did not acknowledge readiness')
+        trigger()
         deadline = time.monotonic() + 6
         last = None
         quiet = time.monotonic()

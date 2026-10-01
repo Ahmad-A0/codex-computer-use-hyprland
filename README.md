@@ -14,8 +14,10 @@ Codex → official cua_repl / NodeREPL → private official cua / Sky copy
 
 `prepare-runtime.mjs` makes an ignored local copy of the installed `@oai/cua`
 and `@oai/sky` packages. Narrow, exact-match patches remove Linux-only method
-rejections and forward the same public calls to our backend. Both package
-versions and source snippets are checked before patching. Installed Codex files
+rejections and forward the same public calls to our backend. Only the required
+code replacements must match once; package versions are recorded for diagnosis.
+Documentation updates and unrelated source changes do not block startup. Source
+hashes refresh the cache when the installed packages change. Installed Codex files
 are never edited. The incompatible community `native-client.mjs` API is not used.
 
 ## Setup
@@ -32,22 +34,42 @@ On Arch the Python bindings are `python-gobject`, `at-spi2-core`, and
 `python-pillow`. Use the distribution Python to access those bindings.
 
 ```sh
-./scripts/setup.sh
-./scripts/build-native.sh
-.venv/bin/python scripts/load-native.py
-npm run doctor
-node scripts/configure.mjs --write
+./install
+./doctor
 ```
 
-The final command registers `cua_repl` in this workspace's `.codex/config.toml`.
-It refuses to overwrite an existing config; without `--write`, it prints the
-entry to merge. Start a new Codex session to use this provider.
+`./install` uses the committed `uv.lock` to install Python dependencies, builds
+the native helpers, prepares the compatible runtime overlay, and registers
+`cua_repl` in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). Other config
+settings and comments are preserved, with a backup before changes. Use
+`./install --project` to register only for this checkout. Start a new Codex
+session to use the provider; its native module loads on first use.
 
-The runtime defaults to `/opt/codex-desktop/resources/cua_node`; override it
-with `CODEX_CUA_RUNTIME`. `HYPRLAND_PYTHON` selects the setup interpreter.
+uv manages the generated `.venv` using the distribution Python and its
+Gio/AT-SPI/Pillow bindings. No environment activation is needed. The package is
+installed normally rather than editable; rerun `./install` after source changes.
+`./doctor` checks the locked environment, native prerequisites, compatible Codex
+runtime, Python bindings, and desktop inventory. System libraries and development
+headers are installed through your distribution's package manager.
+
+The launcher discovers the Codex runtime in `/usr/lib/chatgpt/resources/cua_node`
+or `/opt/codex-desktop/resources/cua_node`; override it with `CODEX_CUA_RUNTIME`.
+`HYPRLAND_PYTHON` selects the distribution interpreter used for setup.
 `./bin/cua-repl-hyprland` launches the standard MCP stdio server directly.
-`CUA_REPL_ENABLED_SURFACES` defaults to `computer`; browser surfaces remain
-upstream when enabled and supplied by the host.
+`./install` registers both native apps and the official browser surface with
+`CUA_REPL_ENABLED_SURFACES="browser,computer"`. Direct launcher calls default to
+`computer`; set `CUA_REPL_ENABLED_SURFACES` to select the surfaces explicitly.
+
+Browser mode loads the official bundled browser service, with Chrome/extension
+and Codex in-app browser discovery. It requires a connected ChatGPT browser
+extension in a supported browser, or an available Codex in-app browser host.
+Enabling the surface does not install an extension or create a browser connection.
+Zen/Firefox remains accessible through the native Hyprland app surface.
+`cua.listBrowsers()` checks discovery; `cua.createBrowserTab(...)` and
+`cua.getTab(...)` use the official browser API. Browser calls need the session and
+turn metadata that Codex attaches to MCP calls; a bare standalone MCP client
+without that metadata cannot validate browser connectivity. Custom trusted browser
+services and browser environment settings are preserved.
 
 A new provider process loads the built native module if needed after compositor
 restart. It compares build IDs before reusing a loaded module. Upgrades drain
@@ -105,12 +127,42 @@ Private Wayland clipboard offers preserve the desktop selection. XWayland paste
 snapshots every available clipboard data format, temporarily owns the X selection,
 and restores the previous formats unless a newer copy replaced the selection. A
 small owner process retains the restored data until the next copy or X server exit.
-Snapshot limits fail before changing ownership; abandoned pastes restore on EOF or
-timeout. Clipboard managers can observe the temporary X selection. Transfers have
-bounded payloads, nonblocking writes, failure reporting, and abandoned-operation
-cleanup. Large requests use private temporary files to avoid argv limits.
-Drag transactions intercept only their own source; ordinary desktop DND retains
-Hyprland's implementation. No global virtual keyboard/pointer fallback is used.
+For a Wayland-owned clipboard, `wl-paste` (from `wl-clipboard`) snapshots the
+formats without activating an XWayland window. The X11 helper accepts that
+snapshot only for a verified compositor-owned selection; changes detected before
+paste abort the operation.
+
+Paste triggers the application's normal keyboard paste operation. Terminal
+accessibility roles and desktop-entry categories (including executable matching
+for custom window classes) select Ctrl+Shift+V for terminal emulators and Ctrl+V
+for other applications. Custom shortcut remappings may require an explicit key
+command. Failed transfers are reported without replaying another shortcut.
+
+Background captures temporarily resume the target's rendering and service its
+frame callbacks, including subsurfaces and owned popups. They restore suspension
+after capture; abandoned capture leases expire automatically. Window visibility,
+workspace selection, compositor focus and the physical cursor are unchanged.
+Long typing batches give the client bounded opportunities to process input and
+render between chunks. Applications without AT-SPI still require screenshots;
+this does not synthesize a terminal accessibility tree.
+
+`getApp` reuses a running application and launches only when needed, waiting for
+its initial window. `launch_app` acknowledges desktop launch success or failure;
+it does not promise a new window. Use normal app UI actions to create additional
+windows, and compare inventories before treating a window as disposable.
+
+Actions mark the next target observation for a 250 ms settling interval, measured
+from action completion. Inventory reads and subsequent observations do not repeat
+that wait. Rendering refresh remains separate so hidden apps can submit new frames.
+This follows the macOS service's action-driven observation contract; Linux uses
+Wayland frame callbacks rather than claiming to reproduce its AX event debounce.
+
+Implementation references: the [native input research](https://github.com/hqhq1025/codex-computer-use-lab/blob/main/docs/20-last-window-input-dispatch-and-event-backend.md),
+[conditional observation settling](https://github.com/hqhq1025/codex-computer-use-lab/blob/main/docs/12-native-function-callgraph.md),
+and the installed official macOS client/docs. The research does not specify the
+newer paste action's internal trigger; Linux shortcut selection is our platform
+implementation of the documented pasteboard/clipboard-preservation contract.
+
 
 ## Remaining parity gaps
 
@@ -183,9 +235,34 @@ An earlier authorized `gpt-5.6-sol` run performed browser research across five
 tabs through this interface. It encountered and reported website challenges.
 Its report is `.artifacts/sol-background/report.md`.
 
-Validated versions: Hyprland 0.56.2, `@oai/cua` 0.2.5, `@oai/sky` 0.7.1,
-`@oai/cua-repl` 0.1.0. Upstream runtime upgrades require reviewing
-the exact patches and internal Sky executable protocol.
+The current runtime overlay targets the October 1, 2026 installed bundle:
+`@oai/cua` 0.2.5, `@oai/sky` 0.7.4, and `@oai/cua-repl` 0.1.0. CUA's Linux app
+binding moved out of `create_tinysky_alt.js` into `bind_linux_app.js`; the patches
+now follow that layout. Browser bindings, observations, declaration files, and
+MCP tool descriptions come from the current official packages. An older private
+`build/cua-node-runtime` snapshot is no longer the configured runtime.
+
+The public `openai/codex` repository supplies the CLI/MCP host, but its current
+tree does not include the bundled `@oai/cua`, `@oai/sky`, or `@oai/cua-repl`
+implementation. Those installed JavaScript sources and declarations define the
+interface audited here. Matching public method signatures does not imply
+identical platform behavior; the remaining parity gaps above still apply.
+Upstream runtime versions are not pinned. Bundles continue to work when the
+required patch sites still match. Documentation wording and unrelated file
+changes only refresh cached copies. A changed patch site requires updating the
+adapter; an incompatible Sky protocol may require backend changes. Hyprland's
+native ABI check remains necessary for loading the compositor plugin.
+
+The October 1 audit verified that all 366 shipped CUA/Sky declaration files are
+unchanged in the overlay. A fresh official MCP provider exposed `js`,
+`js_add_node_module_dir`, `js_reset`, and `turn_ended`; native inventory through
+`cua.getState()` and `cua.listWindows()` reported 105 apps and 7 windows. Patched
+JavaScript files passed syntax checks. The updated GUI fixture run was blocked
+by the session's read-only `/run/user/1000` seat-lock directory, and an isolated
+compositor could not create a rendering backend. Current-bundle GUI parity is
+therefore not yet fully live-validated. The ignored
+`.artifacts/current-interface-live.mjs` preserves the bounded disposable-app run
+for validation from a desktop session with the required runtime permissions.
 
 ## References
 

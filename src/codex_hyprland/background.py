@@ -4,15 +4,17 @@ import subprocess
 import tempfile
 import os
 import contextlib
+import time
 from pathlib import Path
 from . import desktop as hyprctl
+from .paths import project_root
 
 
 def send(client, operation, **fields):
     if client.get('xwayland') and operation in ('click', 'move', 'drag', 'scroll', 'key', 'text', 'point', 'ax_probe', 'ax_probe_clear', 'ax_probe_end', 'popup_capture'):
         info = send(client, 'x11_info')
         request = dict(op=operation, xid=info['xid'], display=info['display'], width=client['size'][0], height=client['size'][1], **fields)
-        helper = Path(__file__).resolve().parents[2] / 'build/codex-x11'
+        helper = project_root() / 'build/codex-x11'
         if operation in ('drag', 'click', 'key', 'text'):
             send(client, 'activation_begin')
         try:
@@ -47,7 +49,31 @@ def capture(client):
     stable = client.get('stableId')
     if not stable:
         raise RuntimeError('Hyprland does not expose the stable toplevel ID needed for background capture')
-    return subprocess.run(['grim', '-T', stable, '-s', '1', '-t', 'png', '-'], check=True, capture_output=True, timeout=15).stdout
+    with refreshing(client):
+        return subprocess.run(['grim', '-T', stable, '-s', '1', '-t', 'png', '-'], check=True, capture_output=True, timeout=15).stdout
+
+
+@contextlib.contextmanager
+def refreshing(client):
+    token = send(client, 'refresh_begin')['token']
+    try:
+        settle(client)
+        yield
+    finally:
+        send(client, 'refresh_end', token=token)
+
+
+def settle(client):
+    # Round trips let the client process input and submit buffers after its
+    # pending frame callbacks. Bound animation work rather than waiting for
+    # identical pixels (which would hang on a blinking cursor or video).
+    quiet = 0
+    for attempt in range(12):
+        state = send(client, 'refresh')
+        quiet = quiet + 1 if not state['callbacks'] else 0
+        time.sleep(.016)
+        if attempt >= 3 and quiet >= 2:
+            break
 
 
 def type_text(client, value):
@@ -58,6 +84,8 @@ def type_text(client, value):
         new = ord(char) > 126 and char not in extras
         if len(chunk) >= 512 or (new and len(extras) >= 32):
             send(client, 'text', text=chunk)
+            with refreshing(client):
+                pass
             chunk, extras = '', set()
         chunk += char
         if ord(char) > 126:

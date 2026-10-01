@@ -8,6 +8,9 @@ import math
 import os
 import shlex
 import sys
+import json
+import shutil
+import uuid
 from pathlib import Path
 import tempfile
 import time
@@ -50,6 +53,23 @@ class Backend:
         self.identities = {}
         self.pointer_position = None
         self.capture_origins = {}
+        self.observation_deadlines = {}
+
+    def defer_observation(self, params):
+        window = params.get('window')
+        key = window.get('id') if isinstance(window, dict) else None
+        self.observation_deadlines[key] = time.monotonic() + .25
+
+    def wait_for_observation(self, client=None):
+        key = int(client['address'], 16) if client else None
+        deadline = max(self.observation_deadlines.pop(key, 0),
+                       self.observation_deadlines.pop(None, 0))
+        if client is None:
+            deadline = max([deadline, *self.observation_deadlines.values()])
+            self.observation_deadlines.clear()
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(remaining)
 
     def close(self):
         self.directory.cleanup()
@@ -78,12 +98,34 @@ class Backend:
     def apps(self):
         return [a for a in self.gio.AppInfo.get_all() if a.get_id() and a.should_show()]
 
+    @staticmethod
+    def app_aliases(app):
+        wmclass = app.get_startup_wm_class() if hasattr(app, "get_startup_wm_class") else None
+        return {s.casefold() for s in (app.get_id().removesuffix(".desktop"), app.get_name(),
+                wmclass, Path(app.get_executable() or "").name) if s}
+
+    def terminal_client(self, client):
+        # Desktop categories cover terminal emulators regardless of brand or
+        # custom window class. Executable matching handles e.g. floating windows.
+        names = {client.get(k, "").casefold() for k in ("class", "initialClass")}
+        try:
+            executable = Path(f'/proc/{client["pid"]}/exe').resolve(strict=True)
+        except OSError:
+            executable = None
+        for app in self.apps():
+            categories = (app.get_categories() or "").split(";") if hasattr(app, "get_categories") else []
+            if "TerminalEmulator" not in categories:
+                continue
+            candidate = shutil.which(app.get_executable() or "")
+            if names & self.app_aliases(app) or (executable and candidate and Path(candidate).resolve() == executable):
+                return True
+        return False
+
     def list_apps(self, _):
         windows = self.list_windows({})
         result = []
         for a in self.apps():
-            wmclass = a.get_startup_wm_class() if hasattr(a, "get_startup_wm_class") else None
-            aliases = {s.casefold() for s in (a.get_id().removesuffix(".desktop"), a.get_name(), wmclass, Path(a.get_executable() or "").name) if s}
+            aliases = self.app_aliases(a)
             result.append({"id": a.get_id(), "name": a.get_display_name(),
                            "windows": [w for w in windows if w["app"].casefold() in aliases]})
         return sorted(result, key=lambda a: (a["name"].casefold(), a["id"]))
@@ -228,6 +270,7 @@ class Backend:
         if type(include) is not bool:
             raise ValueError("include_screenshot must be boolean")
         query = text(p.get("query", ""), "query")
+        self.wait_for_observation(c)
         screenshots = self.screenshot(c) if include else []
         c = self.target(p["window"])
         tree, source = self.ax.snapshot(c, query)
@@ -236,6 +279,7 @@ class Backend:
                 "ax_tree_source": source, "screenshots": screenshots}
 
     def get_screenshot(self, _):
+        self.wait_for_observation()
         return self.screenshot()
 
     def click(self, p):
@@ -364,7 +408,11 @@ class Backend:
             raise ValueError("paste format must be text, html, or md")
         with self.seat(c):
             self.trust.guard_password_field(c, False)
-            paste(c, value, format)
+            terminal = self.ax.focused_terminal(c) or self.terminal_client(c)
+            modifiers = ['Control', 'Shift'] if terminal else ['Control']
+            def trigger():
+                background.send(c, 'key', key='v', modifiers=modifiers)
+            paste(c, value, format, trigger)
 
     def select_text(self, p):
         c = self.target(p.get("window"))
@@ -399,6 +447,11 @@ class Backend:
         exact = [a for a in entries if a.get_id() == name or
                  (hasattr(a, "get_filename") and a.get_filename() == name)]
         matches = exact or [a for a in entries if a.get_name().casefold() == name.casefold()]
+        if not exact and len(matches) > 1:
+            running = {a['id'] for a in self.list_apps({}) if a['windows']}
+            preferred = [a for a in matches if a.get_id() in running]
+            if preferred:
+                matches = preferred
         if len(matches) != 1:
             raise ValueError("App not found or ambiguous; use its inventory ID or desktop-entry path")
         ident = matches[0].get_id()
@@ -426,10 +479,11 @@ class Backend:
             matches = [a for a in apps if a.get_name().casefold() == name.casefold()]
         if len(matches) != 1:
             raise ValueError("App not found or ambiguous; use its exact inventory ID")
+        status = Path(self.directory.name) / ('launch-' + uuid.uuid4().hex + '.json')
         with self.seat():
             env = {k: os.environ[k] for k in ("XDG_DATA_HOME", "XDG_DATA_DIRS", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY") if k in os.environ}
             command = shlex.join(["env", *(f"{k}={v}" for k, v in env.items()), sys.executable,
-                                  "-m", "codex_hyprland.launch", matches[0].get_id()])
+                                  "-m", "codex_hyprland.launch", matches[0].get_id(), str(status)])
             command = "[no_initial_focus on; focus_on_activate off] " + command
             if self.hypr.provider() == self.hypr.LUA:
                 result = self.hypr._run("dispatch", "hl.dsp.exec_cmd(" + self.hypr.lua_str(command) + ")")
@@ -437,6 +491,20 @@ class Backend:
                     raise RuntimeError(f"Application launch failed: {result}")
             else:
                 self.hypr.dispatch("exec", command)
+        # Wait for the launcher's result, not a new window. getApp's resolver
+        # handles initial window readiness; launch_app may reuse a running app.
+        deadline = time.monotonic() + 5
+        try:
+            while time.monotonic() < deadline:
+                if status.exists():
+                    result = json.loads(status.read_text())
+                    if not result.get('ok'):
+                        raise RuntimeError('Application launch failed: ' + result.get('error', 'unknown error'))
+                    return
+                time.sleep(.025)
+            raise RuntimeError('Application launcher did not acknowledge the request; inspect inventory before retrying')
+        finally:
+            status.unlink(missing_ok=True)
 
     def activate_window(self, p):
         c = self.target(p.get("window"))
