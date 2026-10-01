@@ -72,6 +72,20 @@ function gateApps(options, client) {
   for (const name of approvalGated) {
     const run = client[name];
     if (typeof run !== "function") continue;
+    if (name === "drag_handle") {
+      // drag_handle() synchronously returns a handle; approve when it starts.
+      client[name] = function () {
+        const handle = run();
+        return Object.assign({}, handle, {
+          async start(point) {
+            await approveApp(options, name, point);
+            const suspend = globalThis.nodeRepl?.withSuspendedTimeout;
+            return typeof suspend === "function" ? suspend(() => handle.start(point)) : handle.start(point);
+          },
+        });
+      };
+      continue;
+    }
     client[name] = async function (input) {
       await approveApp(options, name, input);
       const suspend = globalThis.nodeRepl?.withSuspendedTimeout;

@@ -37,6 +37,31 @@ def text(value, name, empty=True):
     return value
 
 
+def duration(p):
+    """Milliseconds to hold a key or button; None for an ordinary press."""
+    if "duration" not in p:
+        return None
+    value = number(p["duration"], "duration")
+    if not 0 <= value <= 10000:
+        raise ValueError("duration must be between 0 and 10000 milliseconds")
+    return value or None
+
+
+KEY_ALIASES = {"Control_L": "ctrl", "Control_R": "ctrl", "Shift_L": "shift", "Shift_R": "shift",
+               "Alt_L": "alt", "Alt_R": "altgr", "Super_L": "super", "Super_R": "super"}
+MODIFIER_KEYS = {"ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L", "logo": "Super_L", "altgr": "ISO_Level3_Shift"}
+
+
+def chord(value):
+    """Parse a press_key chord; return (modifiers, symbol, keys to hold in order)."""
+    key = "+".join(KEY_ALIASES.get(k.strip(), k.strip()) for k in text(value, "key", False).split("+"))
+    modifiers, symbol = desktop.parse_combo(key)
+    names = {}
+    for name in [MODIFIER_KEYS[m] for m in modifiers] + ([symbol] if symbol else []):
+        names.setdefault(name.casefold(), name)
+    return modifiers, symbol, tuple(names.values())
+
+
 class Backend:
     def __init__(self):
         import gi
@@ -54,6 +79,12 @@ class Backend:
         self.pointer_position = None
         self.capture_origins = {}
         self.observation_deadlines = {}
+        # Sky key_down holds by target (window ID, or None for the desktop):
+        # {"client": client, "chords": {identity: key names}}.
+        self.holds = {}
+        self.hold_epoch = None
+        self.dragging = None
+        self.clipboards = {}
 
     def defer_observation(self, params):
         window = params.get('window')
@@ -72,7 +103,132 @@ class Backend:
             time.sleep(remaining)
 
     def close(self):
+        # Leave nothing held when the helper exits; handles become invalid.
+        with contextlib.suppress(Exception):
+            if self.dragging:
+                self.drag_handle({"action": "end"})
+        with contextlib.suppress(Exception):
+            self.release_holds()
+        self.clipboards.clear()
         self.directory.cleanup()
+
+    # Held keys. The compositor module (Wayland) or the X11 helper's private
+    # keyboard holds the union of a window's chords; a key shared by several
+    # chords stays down until no chord needs it.
+    def held_names(self, address):
+        names = {}
+        for entry in self.holds.values():
+            if entry["client"]["address"] == address:
+                for chord_names in entry["chords"].values():
+                    for name in chord_names:
+                        names.setdefault(name.casefold(), name)
+        return list(names.values())
+
+    def sync_holds(self, client):
+        names = self.held_names(client["address"])
+        if client.get("xwayland"):
+            if names:
+                background.held[client["address"]] = names
+            else:
+                background.held.pop(client["address"], None)
+            background.send(client, "hold")
+            self.hold_epoch = background.send(client, "status")["epoch"]
+        else:
+            # The module releases these if this provider process exits without key_up.
+            self.hold_epoch = background.send(client, "hold", keys=names, owner=os.getpid())["epoch"]
+
+    def release_holds(self):
+        entries, self.holds = list(self.holds.values()), {}
+        for client in {e["client"]["address"]: e["client"] for e in entries}.values():
+            with contextlib.suppress(Exception):
+                if not self.alive(client):
+                    if client.get("xwayland") and client.get("display"):
+                        background.x11_release(client["display"])
+                else:
+                    self.sync_holds(client)
+        background.held.clear()
+
+    def alive(self, client):
+        return any(c["address"] == client["address"] and c["pid"] == client["pid"] for c in self.clients())
+
+    def check_holds(self, method):
+        """Before input: forget holds of closed windows and holds that physical input released."""
+        if not self.holds:
+            return
+        for key, entry in list(self.holds.items()):
+            if not self.alive(entry["client"]):
+                del self.holds[key]
+                rest = [e for e in self.holds.values() if e["client"]["address"] == entry["client"]["address"]]
+                if not rest:
+                    background.held.pop(entry["client"]["address"], None)
+                    if entry["client"].get("xwayland") and entry["client"].get("display"):
+                        with contextlib.suppress(Exception):
+                            background.x11_release(entry["client"]["display"])
+        if self.holds and background.send(next(iter(self.holds.values()))["client"], "status")["epoch"] != self.hold_epoch:
+            self.release_holds()
+            if method not in ("key_down", "key_up", "clipboard_release"):
+                raise RuntimeError("Physical input released the held keys; no input was delivered. Repeat key_down if still needed.")
+
+    def hold(self, key, client, names):
+        """Add a chord to a target's holds; return False if it was already held."""
+        entry = self.holds.setdefault(key, {"client": client, "chords": {}})
+        identity = tuple(n.casefold() for n in names)
+        if identity in entry["chords"]:
+            return False
+        if client.get("xwayland") and "display" not in client:
+            client["display"] = background.send(client, "x11_info")["display"]
+        entry["chords"][identity] = names
+        try:
+            self.sync_holds(entry["client"])
+        except Exception:
+            self.unhold(key, names, sync=False)
+            raise
+        return True
+
+    def unhold(self, key, names, sync=True):
+        entry = self.holds.get(key)
+        identity = tuple(n.casefold() for n in names)
+        if entry is None or entry["chords"].pop(identity, None) is None:
+            return
+        if not entry["chords"]:
+            del self.holds[key]
+        if sync:
+            self.sync_holds(entry["client"])
+
+    @contextlib.contextmanager
+    def holding(self, client, names):
+        """Hold an action's optional key chord around it."""
+        key = ("action", client["address"])
+        added = bool(names) and self.hold(key, client, names)
+        try:
+            yield
+        finally:
+            if added:
+                self.unhold(key, names)
+
+    def key_down(self, p):
+        key = positive_id(p["window"].get("id")) if isinstance(p.get("window"), dict) else None
+        _, _, names = chord(p.get("key"))
+        entry = self.holds.get(key)
+        c = self.target(p["window"]) if key else (entry["client"] if entry else self.active_target())
+        with self.seat(c):
+            self.hold(key, c, names)
+
+    def key_up(self, p):
+        # The hold may outlive its window; releasing an absent hold is a no-op.
+        if "window" in p and not isinstance(p["window"], dict):
+            raise ValueError("A window from listWindows() is required")
+        key = positive_id(p["window"].get("id")) if "window" in p else None
+        _, _, names = chord(p.get("key"))
+        entry = self.holds.get(key)
+        if entry is None or tuple(n.casefold() for n in names) not in entry["chords"]:
+            return
+        with self.seat(entry["client"]):
+            self.unhold(key, names)
+
+    def pointer_free(self):
+        if self.dragging:
+            raise RuntimeError("A drag handle is pressed; move it with move_to or release it with end first")
 
     def clients(self):
         return [c for c in self.hypr.query("clients") if c.get("mapped", True)]
@@ -290,13 +446,17 @@ class Backend:
         count = p.get("click_count", 1)
         if type(count) is not int or not 1 <= count <= 3:
             raise ValueError("click_count must be 1, 2, or 3")
+        names = chord(p["key"])[2] if "key" in p else ()
+        hold = duration(p)
+        self.pointer_free()
         if "element_id" in p:
             if not c or "x" in p or "y" in p:
                 raise ValueError("Element clicks require a window and no coordinates")
             ident = text(p["element_id"], "element_id", False)
-            # Like macOS, any button and click count works on an element. A
-            # single left/right click prefers the element's AT-SPI action.
-            action = self.ax.primary_action(c, ident, button) if count == 1 and button != "middle" else None
+            # Like macOS, any button, click count, chord and duration works on
+            # an element. A plain left/right click prefers its AT-SPI action.
+            plain = count == 1 and button != "middle" and not names and hold is None
+            action = self.ax.primary_action(c, ident, button) if plain else None
             if action is not None:
                 with self.app_action(c):
                     self.ax.action(c, ident, name=action)
@@ -304,16 +464,26 @@ class Backend:
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
             x, y = self.ax.point(c, ident)
-            self.point(c, x, y)
-            with self.seat(c):
-                c, x, y = self.input_target(c, x, y)
-                background.send(c, 'click', x=x, y=y, button=button, count=count)
-            return
-        x, y = self.location(p, c)
+        else:
+            x, y = self.location(p, c)
         self.point(c, x, y)
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
-            background.send(c, "click", x=x, y=y, button=button, count=count)
+            with self.holding(c, names):
+                self.press_button(c, x, y, button, count, hold)
+
+    def press_button(self, c, x, y, button, count, hold):
+        if hold is None or c.get("xwayland"):
+            fields = {} if hold is None else {"duration": round(hold)}
+            background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
+            return
+        # Hold the Wayland button across a real interval without blocking the compositor.
+        for _ in range(count):
+            background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
+            try:
+                time.sleep(hold / 1000)
+            finally:
+                background.send(c, "drag_cancel")
 
     def scroll(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -337,12 +507,15 @@ class Backend:
             pixels = number(p.get("pixels", 500), "pixels")
         if not 0 < pixels <= 8388607:
             raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
+        names = chord(p["key"])[2] if "key" in p else ()
+        self.pointer_free()
         x, y = self.location(p, c)
         self.point(c, x, y)
         dx, dy = directions[p["direction"]]
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
-            background.send(c, "scroll", x=x, y=y, dx=dx * pixels, dy=dy * pixels)
+            with self.holding(c, names):
+                background.send(c, "scroll", x=x, y=y, dx=dx * pixels, dy=dy * pixels)
 
     def drag(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -350,6 +523,8 @@ class Backend:
         if not isinstance(path, list) or len(path) != 2 or not all(isinstance(v, dict) for v in path):
             raise ValueError("This backend accepts a two-point drag path (the cua.drag contract)")
         points = [(number(v.get("x"), "x"), number(v.get("y"), "y")) for v in path]
+        names = chord(p["key"])[2] if "key" in p else ()
+        self.pointer_free()
         if c:
             ox, oy = self.capture_origins.get(c["address"], (0, 0))
             points = [(x+ox, y+oy) for x,y in points]
@@ -365,23 +540,39 @@ class Backend:
                 destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y)
             self.trust.guard_client(destination)
             self.trust.guard_auth_client(destination, False)
-            if source.get("xwayland") or destination.get("xwayland"):
-                if not source.get("xwayland") or not destination.get("xwayland"):
-                    raise ValueError("Mixed Wayland/XWayland drag-and-drop requires the compositor data bridge")
-                destination_info = background.send(destination, "x11_info")
-                background.send(source, "drag", x=x, y=y, end_x=end_x, end_y=end_y,
-                                destination_xid=destination_info['xid'],
-                                destination_width=destination['size'][0], destination_height=destination['size'][1])
-            else:
-                background.drag(source, destination, (x, y), (end_x, end_y))
+            with self.holding(source, names):
+                self.drag_between(source, destination, x, y, end_x, end_y)
+
+    def drag_between(self, source, destination, x, y, end_x, end_y):
+        if source.get("xwayland") or destination.get("xwayland"):
+            if not source.get("xwayland") or not destination.get("xwayland"):
+                raise ValueError("Mixed Wayland/XWayland drag-and-drop requires the compositor data bridge")
+            destination_info = background.send(destination, "x11_info")
+            background.send(source, "drag", x=x, y=y, end_x=end_x, end_y=end_y,
+                            destination_xid=destination_info['xid'],
+                            destination_width=destination['size'][0], destination_height=destination['size'][1])
+        else:
+            background.drag(source, destination, (x, y), (end_x, end_y))
 
     def type_text(self, p):
         c = self.target(p["window"]) if "window" in p else None
         value = text(p.get("text"), "text")
-        if not value:
+        ident = text(p["element_id"], "element_id", False) if "element_id" in p else None
+        if ident is not None:
+            if not c:
+                raise ValueError("Element typing requires a window")
+            self.ax.editable(c, ident)  # Invalid targets fail before any input.
+        if not value and ident is None:
             return
         c = c or self.active_target()
         with self.seat(c):
+            if ident is not None:
+                with self.app_action(c):
+                    if c.get("xwayland"):
+                        background.send(c, "hold")  # Route the private X keyboard focus.
+                    self.ax.focus_editable(c, ident)
+            if not value:
+                return
             self.trust.guard_password_field(c, False)
             if c.get("xwayland") and any(ord(char) > 127 for char in value):
                 self.ax.insert_focused_text(c, value)
@@ -390,14 +581,16 @@ class Backend:
 
     def press_key(self, p):
         c = self.target(p["window"]) if "window" in p else None
-        key = text(p.get("key"), "key", False)
-        aliases = {"Control_L": "ctrl", "Control_R": "ctrl", "Shift_L": "shift", "Shift_R": "shift",
-                   "Alt_L": "alt", "Alt_R": "altgr", "Super_L": "super", "Super_R": "super"}
-        key = "+".join(aliases.get(k.strip(), k.strip()) for k in key.split("+"))
-        modifiers, symbol = desktop.parse_combo(key)
+        modifiers, symbol, held = chord(p.get("key"))
+        hold = duration(p)
         c = c or self.active_target()
         names = {"ctrl": "Control", "shift": "Shift", "alt": "Mod1", "logo": "Mod4", "altgr": "Mod5"}
         with self.seat(c):
+            if hold is not None:
+                # Press the chord in order, hold it, then release in reverse order.
+                with self.holding(c, held):
+                    time.sleep(hold / 1000)
+                return
             if not symbol:
                 symbol = {"ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L", "logo": "Super_L", "altgr": "ISO_Level3_Shift"}[modifiers[-1]]
             background.send(c, "key", key=symbol, modifiers=[names[m] for m in modifiers])
@@ -416,6 +609,119 @@ class Backend:
             def trigger():
                 background.send(c, 'key', key='v', modifiers=modifiers)
             paste(c, value, format, trigger)
+
+    def clipboard_shortcut(self, c, key):
+        terminal = self.ax.focused_terminal(c) or self.terminal_client(c)
+        modifiers = ['Control', 'Shift'] if terminal else ['Control']
+        return lambda: background.send(c, 'key', key=key, modifiers=modifiers)
+
+    def clipboard_read(self, p):
+        from .clipboard import copy
+        c = self.target(p.get("window"))
+        if len(self.clipboards) >= 32:
+            raise RuntimeError("Too many clipboard handles; release unused handles")
+        with self.seat(c):
+            items = copy(c, self.clipboard_shortcut(c, 'c'))
+        if sum(len(v) for items in [items, *self.clipboards.values()] for v in items.values()) > 256 << 20:
+            raise RuntimeError("Clipboard handle storage is full; release unused handles")
+        handle = "clipboard-" + uuid.uuid4().hex
+        self.clipboards[handle] = items
+        return handle
+
+    def clipboard_handle(self, p):
+        handle = p.get("handle")
+        if not isinstance(handle, str) or not handle:
+            raise ValueError("handle must be a clipboard handle string from clipboard_read()")
+        return handle
+
+    def clipboard_write(self, p):
+        from .clipboard import paste_items
+        c = self.target(p.get("window"))
+        items = self.clipboards.get(self.clipboard_handle(p))
+        if items is None:
+            raise ValueError("Unknown clipboard handle; copy again in this Linux helper")
+        with self.seat(c):
+            self.trust.guard_password_field(c, False)
+            paste_items(c, items, self.clipboard_shortcut(c, 'v'))
+
+    def clipboard_release(self, p):
+        self.clipboards.pop(self.clipboard_handle(p), None)
+
+    def drag_handle(self, p):
+        """Press at start, move while pressed, release at end (Sky drag_handle)."""
+        action = p.get("action")
+        if action == "end":
+            if not self.dragging:
+                raise RuntimeError("drag handle must be started before ending")
+            drag, self.dragging = self.dragging, None
+            source = drag["source"]
+            x, y = drag["x"] - source["at"][0], drag["y"] - source["at"][1]
+            with self.seat():
+                if source.get("xwayland"):
+                    background.send(source, "button", x=x, y=y, button="left", state="up")
+                    return
+                try:
+                    status = background.send(source, "drag_status")
+                    target = drag["target"]
+                    deadline = time.monotonic() + .75
+                    while status["dnd"] and not status["accepted"] and time.monotonic() < deadline:
+                        background.send(target, "drag_move", x=drag["x"] - target["at"][0], y=drag["y"] - target["at"][1])
+                        time.sleep(.02)
+                        status = background.send(source, "drag_status")
+                except RuntimeError:
+                    raise RuntimeError("The drag was already released by physical input or its timeout") from None
+                if status["dnd"] and not status["accepted"]:
+                    background.send(source, "drag_cancel")  # Releasing over no drop target cancels.
+                    return
+                status = background.send(source, "drag_end")
+                deadline = time.monotonic() + 3
+                while not status["finished"] and time.monotonic() < deadline:
+                    time.sleep(.02)
+                    status = background.send(source, "drag_status")
+                if not status["finished"]:
+                    background.send(source, "drag_cancel")
+                    raise RuntimeError("Drop target did not finish the drag-and-drop transfer")
+            return
+        if action not in ("start", "move_to"):
+            raise ValueError("drag_handle action must be start, move_to, or end")
+        c = self.target(p["window"]) if "window" in p else None
+        x, y = number(p.get("x"), "x"), number(p.get("y"), "y")
+        if c:
+            ox, oy = self.capture_origins.get(c["address"], (0, 0))
+            x, y = c["at"][0] + x + ox, c["at"][1] + y + oy
+        if action == "start":
+            self.pointer_free()
+            with self.seat(c):
+                source, sx, sy = self.input_target(None, x, y) if not c else self.input_target(c, x - c["at"][0], y - c["at"][1])
+                if source.get("xwayland"):
+                    background.send(source, "button", x=sx, y=sy, button="left", state="down")
+                else:
+                    background.send(source, "drag_begin", x=sx, y=sy, timeout=600000, focus=True)
+                self.dragging = {"source": source, "target": source, "x": source["at"][0] + sx, "y": source["at"][1] + sy}
+            return
+        if not self.dragging:
+            raise RuntimeError("drag handle must be started before moving")
+        source = self.dragging["source"]
+        with self.seat(c):
+            if source.get("xwayland"):
+                background.send(source, "drag_motion", x=x - source["at"][0], y=y - source["at"][1])
+                target = source
+            else:
+                # An app-started drag-and-drop goes to the Wayland window under the point.
+                try:
+                    target = self.input_target(None, x, y)[0]
+                except ValueError:
+                    target = source
+                if target.get("xwayland"):
+                    target = source
+                try:
+                    background.send(target, "drag_move", x=x - target["at"][0], y=y - target["at"][1])
+                except RuntimeError as error:
+                    if "No background drag" in str(error):
+                        self.dragging = None
+                        raise RuntimeError("The drag was already released by physical input or its timeout") from None
+                    raise
+            self.dragging.update(x=x, y=y, target=target)
 
     def select_text(self, p):
         c = self.target(p.get("window"))
@@ -551,11 +857,14 @@ class Backend:
 
     def move(self, p):
         c = self.target(p["window"]) if "window" in p else None
+        names = chord(p["key"])[2] if "key" in p else ()
+        self.pointer_free()
         x, y = self.location(p, c)
         self.point(c, x, y)
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
-            background.send(c, "move", x=x, y=y)
+            with self.holding(c, names):
+                background.send(c, "move", x=x, y=y)
             self.pointer_position = self.point(c, x, y)
 
     def move_relative(self, p):
@@ -563,4 +872,4 @@ class Backend:
         if any(type(v) is not int or not -32768 <= v <= 32767 for v in offsets):
             raise ValueError("Relative offsets must be integers in [-32768, 32767]")
         x, y = self.pointer_position or self.hypr.cursor_pos()
-        self.move({"x": x + offsets[0], "y": y + offsets[1]})
+        self.move({"x": x + offsets[0], "y": y + offsets[1], **({"key": p["key"]} if "key" in p else {})})

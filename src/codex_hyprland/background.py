@@ -9,18 +9,32 @@ from pathlib import Path
 from . import desktop as hyprctl
 from .paths import project_root
 
+# Keys each XWayland window holds (Sky key_down and per-action chords). The
+# X11 helper's private keyboard holds exactly the target's keys for each run.
+held = {}
+X11_OPERATIONS = ('click', 'move', 'drag', 'scroll', 'key', 'text', 'point', 'ax_probe', 'ax_probe_clear',
+                  'ax_probe_end', 'popup_capture', 'hold', 'button', 'drag_motion')
+ACTIVATING = ('drag', 'click', 'key', 'text', 'hold', 'button', 'drag_motion')
+
+
+def x11_release(display):
+    """Release every key and button the private X11 devices still hold."""
+    request = json.dumps({'op': 'release_all', 'display': display})
+    subprocess.run([str(project_root() / 'build/codex-x11'), request], capture_output=True, timeout=10)
+
 
 def send(client, operation, **fields):
-    if client.get('xwayland') and operation in ('click', 'move', 'drag', 'scroll', 'key', 'text', 'point', 'ax_probe', 'ax_probe_clear', 'ax_probe_end', 'popup_capture'):
+    if client.get('xwayland') and operation in X11_OPERATIONS:
         info = send(client, 'x11_info')
-        request = dict(op=operation, xid=info['xid'], display=info['display'], width=client['size'][0], height=client['size'][1], **fields)
+        request = dict(op=operation, xid=info['xid'], display=info['display'], width=client['size'][0], height=client['size'][1],
+                       held=held.get(client['address'], []), **fields)
         helper = project_root() / 'build/codex-x11'
-        if operation in ('drag', 'click', 'key', 'text'):
+        if operation in ACTIVATING:
             send(client, 'activation_begin')
         try:
             result = subprocess.run([str(helper), json.dumps(request)], capture_output=True, text=True, timeout=60)
         finally:
-            if operation in ('drag', 'click', 'key', 'text'):
+            if operation in ACTIVATING:
                 send(client, 'activation_end')
         try:
             response = json.loads(result.stdout)

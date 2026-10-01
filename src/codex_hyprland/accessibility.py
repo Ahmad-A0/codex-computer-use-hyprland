@@ -315,6 +315,46 @@ class Accessibility:
             obj = obj.get_parent()
         return best
 
+    def editable(self, client, ident):
+        """Validate a type_text target before any input is delivered."""
+        obj = self.resolve(client, ident)
+        if not (obj.get_state_set().contains(self.api.StateType.EDITABLE) or obj.is_editable_text()):
+            raise ValueError('Element is not editable; refresh getAXState() and choose an editable element')
+        rect = obj.get_extents(self.api.CoordType.WINDOW)
+        if rect.width <= 0 or rect.height <= 0:
+            raise ValueError('Editable element has no visible bounds')
+        return obj
+
+    def focus_editable(self, client, ident):
+        """Focus an editable element, keeping its caret and selection.
+
+        Toolkits such as GTK select all text on focus; typing must not replace it.
+        """
+        obj = self.editable(client, ident)
+        focused = lambda: (obj.clear_cache(), obj.get_state_set().contains(self.api.StateType.FOCUSED))[1]
+        if focused():
+            return
+        text = obj.is_text()
+        selection = self.api.Text.get_selection(obj, 0) if text and obj.get_n_selections() else None
+        caret = obj.get_caret_offset() if text else None
+        if not obj.is_component() or not obj.grab_focus():
+            raise RuntimeError('Application refused to focus the editable element; no text typed')
+        deadline = time.monotonic() + .6
+        while not focused():
+            if time.monotonic() > deadline:
+                raise RuntimeError('Application did not focus the editable element; no text typed')
+            time.sleep(.02)
+        if not text:
+            return
+        if selection is not None:
+            ok = obj.set_selection(0, selection.start_offset, selection.end_offset) if obj.get_n_selections() else obj.add_selection(selection.start_offset, selection.end_offset)
+        else:
+            for index in reversed(range(obj.get_n_selections())):
+                obj.remove_selection(index)
+            ok = obj.set_caret_offset(caret) and obj.get_caret_offset() == caret
+        if not ok:
+            raise RuntimeError('Editable element did not restore its caret or selection; no text typed')
+
     def insert_focused_text(self, client, value):
         """Insert Unicode using the selected X11 control's native text interface."""
         self.snapshot(client)

@@ -124,6 +124,40 @@ await app.getAXStateAndScreenshot();
 | Page-count scroll | Nearest accessible viewport extent; window extent for coordinate targets; pixel form also supported |
 | `drag` | Timed pointer motion and native data transfer between Wayland windows/apps and between XWayland windows |
 
+The full Sky Linux client surface is also served: `key_down`/`key_up`, the `key`
+chord on `click`, `scroll`, `drag`, `move` and `move_relative`, `click.duration`
+and `press_key.duration` (0–10000 ms), `type_text.element_id`, `drag_handle`,
+and `clipboard_read`/`clipboard_write`/`clipboard_release`.
+
+Held chords belong to their target window (or, without a window, to the window
+active at `key_down`). Repeating a parsed chord is a no-op; aliases and case
+normalize but chord order is part of the chord. A key shared by several chords
+stays down until none needs it, and releasing an absent chord is a no-op. Held
+modifiers apply to later keyboard and pointer input to that window. Only the
+target client's keyboard (Wayland) or the private X11 keyboard sees them; the
+compositor seat is untouched. Physical input releases every hold and the next
+action reports it instead of acting without the expected modifiers. Closing the
+window, exiting the provider (the module reaps holds of a dead provider within a
+second) or unloading the module also releases them. An X11 hold left by a
+killed provider persists on the private device until the next X11 action.
+
+`type_text` with an element validates that it is editable and visible, focuses it
+through AT-SPI, and restores its caret and selection (GTK selects all on focus).
+`drag_handle` presses at `start` (desktop coordinates, like the official client),
+moves the pressed button with `move_to`, and releases at `end`; app-started
+drag-and-drop goes to the window under the point. Pointer actions are refused
+while a handle is pressed; physical button input or 10 idle minutes cancel it.
+
+`clipboard_read` sends the app's Copy shortcut (terminal-aware, like paste). On
+Wayland the module keeps that client's new selection private, reads every
+offered format through a pipe and cancels it, so the desktop clipboard never
+changes. On XWayland the helper snapshots the previous formats, captures every
+format the app's new selection offers, and restores the previous contents (which
+moves ownership to the helper, as paste does). Snapshots stay in the provider
+(64 MiB each, 32 handles, 256 MiB in total) and paste byte-exact into any
+window with `clipboard_write`, across transports and repeatedly, through the
+private-offer paste path. Audio recording (`SKY_ENABLE_AUDIO`) is not implemented.
+
 Window-bound operations never call compositor focus or physical cursor movement
 functions. Same-client keyboard routing persists across automation calls so
 Chromium retains selections, then returns to the physical foreground surface
@@ -213,8 +247,7 @@ pixels. Coordinate input translates the latest screenshot origin, including
 negative popup offsets; accessibility-only observations retain that mapping.
 X11 popups must have a verifiable transient-parent chain to the target window.
 
-Lower-level Sky features outside the public native-app CUA surface, such as
-audio and arbitrary multi-point held-key gestures, are not implemented.
+Sky audio recording is not implemented; `drag` still takes a two-point path.
 Provider-owned input guards enforce confinement and authentication checks. Input remains serialized under the seat lock;
 locked sessions, conflicting grabs, physical held buttons and ordinary desktop
 DND prevent conflicting native delivery.

@@ -20,7 +20,9 @@
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/output/Monitor.hpp>
 #include <json-c/json.h>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -43,6 +45,7 @@ double num(json_object* j,const char* key) { auto v=field(j,key); require(json_o
 
 #include "clipboard.hpp"
 #include "focus_restore.hpp"
+#include "held.hpp"
 #include "popups.hpp"
 #include "activation.hpp"
 #include "capture.hpp"
@@ -98,6 +101,21 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
     require(!resources.empty(),"Application has no Wayland keyboard resource");
     SP<IKeyboard> map=original;
     std::vector<Stroke> strokes;
+    // Held keys stay down for this window: re-entry reports them, and every
+    // stroke carries their modifiers. "hold" replaces the held set in order.
+    auto* held=Held::find(window);
+    std::vector<uint32_t> before=held?held->codes:std::vector<uint32_t>{},after=before;
+    if(op=="hold") {
+        auto keys=field(j,"keys");require(json_object_is_type(keys,json_type_array) && json_object_array_length(keys)<=16,"Expected at most 16 held keys");
+        after.clear();
+        for(size_t i=0;i<json_object_array_length(keys);++i) {
+            auto* name=json_object_get_string(json_object_array_get_idx(keys,i));require(name,"Expected key name");
+            auto sym=xkb_keysym_from_name(name,XKB_KEYSYM_CASE_INSENSITIVE);require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
+            auto code=lookup(original->m_xkbKeymap,sym).code;
+            if(std::find(after.begin(),after.end(),code)==after.end())after.push_back(code);
+        }
+    }
+    const auto heldMods=Held::mask(original->m_xkbKeymap,after);
     if(op=="text") {
         auto chars=decode(str(j,"text")); require(chars.size()<=2048,"Text batch too large");
         std::vector<uint32_t> extras;
@@ -125,12 +143,23 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         strokes.push_back(stroke);
     }
     // All fallible preparation precedes delivery. These calls only enqueue protocol events.
-    wl_array empty{0,0,nullptr};
+    auto entered=Held::array(before);
     for(auto& k:resources) {
-        k->sendKeymap(map); if(op=="probe_clear")k->sendLeave();else k->sendEnter(target,&empty);
-        for(auto s:strokes) { k->sendMods(s.mods,0,0,0); k->sendKey(now(),s.code,WL_KEYBOARD_KEY_STATE_PRESSED); k->sendKey(now(),s.code,WL_KEYBOARD_KEY_STATE_RELEASED); }
-        k->sendMods(0,0,0,0); k->sendKeymap(original);
-        if(previous==target) {auto m=original->m_modifiersState;k->sendMods(m.depressed,m.latched,m.locked,m.group);}
+        k->sendKeymap(map); if(op=="probe_clear")k->sendLeave();else k->sendEnter(target,&entered);
+        if(op=="hold") {
+            std::vector<uint32_t> down=before;
+            for(auto it=before.rbegin();it!=before.rend();++it)if(std::find(after.begin(),after.end(),*it)==after.end()){std::erase(down,*it);k->sendKey(now(),*it,WL_KEYBOARD_KEY_STATE_RELEASED);k->sendMods(Held::mask(original->m_xkbKeymap,down),0,0,0);}
+            for(auto code:after)if(std::find(down.begin(),down.end(),code)==down.end()){down.push_back(code);k->sendKey(now(),code,WL_KEYBOARD_KEY_STATE_PRESSED);k->sendMods(Held::mask(original->m_xkbKeymap,down),0,0,0);}
+        }
+        for(auto s:strokes) { k->sendMods(s.mods|heldMods,0,0,0); k->sendKey(now(),s.code,WL_KEYBOARD_KEY_STATE_PRESSED); k->sendKey(now(),s.code,WL_KEYBOARD_KEY_STATE_RELEASED); }
+        k->sendMods(heldMods,0,0,0); k->sendKeymap(original);
+        if(previous==target) {auto m=original->m_modifiersState;k->sendMods(m.depressed|heldMods,m.latched,m.locked,m.group);}
+    }
+    if(op=="hold") {
+        if(held && after.empty())std::erase_if(Held::states,[&](auto& s){return &s==held;});
+        json_object* owner=nullptr;int pid=json_object_object_get_ex(j,"owner",&owner)?json_object_get_int(owner):0;
+        if(held){held->codes=after;held->owner=pid;}
+        else if(!after.empty())Held::states.push_back({window,seat,after,pid});
     }
     if(op=="probe" || op=="probe_clear" || (previous && previous!=target && previous->client()==seat->client())) Routing::hold(resources,target);
 }
@@ -150,13 +179,16 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             while(offset<data.size()){auto n=read(file.fd,data.data()+offset,data.size()-offset);if(n<0 && errno==EINTR)continue;require(n>0,"Cannot read request file");offset+=n;}
             j.reset(json_tokener_parse(data.c_str()));require(bool(j),"Invalid request file JSON");op=str(j.get(),"op");
         }
-        if(op=="status") return std::string("{\"ok\":true,\"version\":2,\"build\":\"")+CODEX_BUILD_ID+"\",\"offers\":"+std::to_string(Clipboard::offers.size())+",\"busy\":"+(Drag::origin || !Clipboard::transfers.empty() || !Capture::leases.empty() || Activation::active()?"true":"false")+"}";
-        if(op=="drain"){require(!Drag::origin && !Activation::active() && Capture::leases.empty(),"Input or capture still active");Popups::dismiss();Clipboard::drain();Routing::restore();return R"({"ok":true})";}
+        if(op=="status") return std::string("{\"ok\":true,\"version\":2,\"build\":\"")+CODEX_BUILD_ID+"\",\"offers\":"+std::to_string(Clipboard::offers.size())+",\"busy\":"+(Drag::origin || !Clipboard::transfers.empty() || Clipboard::Copy::client || !Capture::leases.empty() || Activation::active()?"true":"false")+",\"epoch\":"+std::to_string(Held::epoch)+",\"holds\":"+std::to_string(Held::states.size())+"}";
+        if(op=="drain"){require(!Drag::origin && !Activation::active() && Capture::leases.empty(),"Input or capture still active");Clipboard::Copy::end();Held::drop();Popups::dismiss();Clipboard::drain();Routing::restore();return R"({"ok":true})";}
         if(op=="drag_status" || op=="drag_end"){if(op=="drag_end"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");require(!g_pInputManager->hasHeldButtons(),"Physical mouse button held");}return Drag::state(op=="drag_end");}
         if(op=="activation_end"){Activation::end();return R"({"ok":true})";}
         if(op=="ax_probe_end"){Routing::restore();return R"({"ok":true})";}
         if(op=="drag_cancel"){Drag::cancel();return R"({"ok":true})";}
         if(op=="paste_status"||op=="paste_end") return Clipboard::state(j.get(),op=="paste_end");
+        if(op=="copy_status") return Clipboard::Copy::state();
+        if(op=="copy_read") return Clipboard::Copy::read(j.get());
+        if(op=="copy_end"){Clipboard::Copy::end();return R"({"ok":true})";}
         if(op=="refresh_end"){Capture::release(num(j.get(),"token"));return R"({"ok":true})";}
         auto window=Desktop::viewState()->query().selector("address:"+str(j.get(),"address")).runWindow();
         require(window && Desktop::View::validMapped(window),"Target is not mapped");
@@ -188,18 +220,26 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             return R"({"ok":true})";
         }
         require(!window->m_isX11 || op=="paste_begin","XWayland requires the targeted X11 helper");
-        if(op=="click" || op=="key" || op=="text" || op=="move" || op=="scroll")Popups::touch(window);
+        if(op=="click" || op=="key" || op=="text" || op=="move" || op=="scroll" || op=="hold")Popups::touch(window);
         auto main=window->wlSurface()->resource(); require(bool(main),"Target has no surface");
         auto seat=g_pSeatManager->seatResourceForClient(main->client()); require(bool(seat),"Target has no seat");
-        if(op=="click")keyboard(window,seat,j.get(),"focus");
+        // Pointer input to a window with held keys also routes its keyboard,
+        // so the client applies the held modifiers to the pointer events.
+        json_object* focus=nullptr;
+        if(op=="click" || ((op=="scroll" || op=="move" || op=="drag" || op=="drag_begin") && Held::find(window)) || (op=="drag_begin" && json_object_object_get_ex(j.get(),"focus",&focus) && json_object_get_boolean(focus)))keyboard(window,seat,j.get(),"focus");
         if(op=="drag_begin" || op=="drag_move") {
             Vector2D point{num(j.get(),"x"),num(j.get(),"y")};
             require(!g_pSeatManager->m_seatGrab,"Seat grab active");
-            return op=="drag_begin"?Drag::begin(window,seat,point):Drag::move(window,point);
+            if(op=="drag_move")return Drag::move(window,point);
+            json_object *button=nullptr,*timeout=nullptr;uint32_t code=272,lifetime=15000;
+            if(json_object_object_get_ex(j.get(),"button",&button)){std::string b=json_object_get_string(button);require(b=="left"||b=="right"||b=="middle","Invalid button");code=b=="right"?273:b=="middle"?274:272;}
+            if(json_object_object_get_ex(j.get(),"timeout",&timeout)){auto ms=num(j.get(),"timeout");require(ms>=1000 && ms<=600000,"Invalid drag timeout");lifetime=ms;}
+            return Drag::begin(window,seat,point,code,lifetime);
         }
+        if(op=="copy_begin"){keyboard(window,seat,j.get(),"focus");return Clipboard::Copy::begin(main);}
         if(op=="ax_probe" || op=="ax_probe_clear"){require(!g_pSeatManager->m_seatGrab,"Seat grab active");keyboard(window,seat,j.get(),op=="ax_probe"?"probe":"probe_clear");return R"({"ok":true})";}
         if(op=="paste_begin") {require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(main),"Unrelated seat grab active");keyboard(window,seat,j.get(),"focus");return Clipboard::begin(main,j.get());}
-        if(op=="text" || op=="key") { require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(main),"Unrelated seat grab active");keyboard(window,seat,j.get(),op); return R"({"ok":true})"; }
+        if(op=="text" || op=="key" || op=="hold") { require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(main),"Unrelated seat grab active");keyboard(window,seat,j.get(),op); return R"({"ok":true,"epoch":)"+std::to_string(Held::epoch)+"}"; }
         require(op=="click"||op=="scroll"||op=="drag"||op=="move"||op=="point","Unknown operation");
         const auto size=window->size(Desktop::View::IGeometric::GEOMETRIC_GOAL);
         Vector2D pos{num(j.get(),"x"),num(j.get(),"y")};
@@ -261,12 +301,13 @@ APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     require(std::string(__hyprland_api_get_hash())==__hyprland_api_get_client_hash(),"Hyprland headers do not match running compositor");
     require(bool(HyprlandAPI::registerHyprCtlCommand(plugin,SHyprCtlCommand{.name="codex-background",.exact=false,.fn=handle})),"Cannot register background command");
-    Clipboard::setup();
+    Clipboard::setup(plugin);
     Capture::setup();
+    Held::setup();
     Routing::setup();
     Drag::setup(plugin);
     Popups::setup(plugin);
     Activation::setup(plugin);
     return {"codex-background","Window-targeted input without compositor focus or cursor movement","Codex Hyprland provider","0.1.0"};
 }
-APICALL EXPORT void PLUGIN_EXIT() { Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Routing::clear(); Clipboard::clear(); }
+APICALL EXPORT void PLUGIN_EXIT() { Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Routing::clear(); Clipboard::clear(); }
