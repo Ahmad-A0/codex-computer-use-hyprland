@@ -47,6 +47,7 @@ int main(int argc,char** argv){
   }
   Window target=json_object_get_uint64(field(j.get(),"xid"));XWindowAttributes attr;need(XGetWindowAttributes(d,target,&attr),"X11 window disappeared");
   if(str(j.get(),"op")=="popup_capture"){std::cout<<capturePopups(d,target,attr,j.get())<<std::endl;return 0;}
+  if(str(j.get(),"op")=="popup_list"){std::cout<<listPopups(d,target,attr,j.get())<<std::endl;return 0;}
   if(!masterPointer){XIAddMasterInfo info{XIAddMaster,const_cast<char*>("Codex background"),True,True};need(XIChangeHierarchy(d,reinterpret_cast<XIAnyHierarchyChangeInfo*>(&info),1)==Success,"Cannot create isolated X11 input devices");XSync(d,False);discover();}
   need(masterPointer&&masterKeyboard&&slavePointer&&slaveKeyboard,"Isolated X11 devices unavailable");
   auto* pointerDevice=XOpenDevice(d,slavePointer);auto* keyboardDevice=XOpenDevice(d,slaveKeyboard);need(pointerDevice&&keyboardDevice,"Cannot open isolated X11 input devices");

@@ -196,6 +196,7 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         if(op=="refresh_begin"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::begin(window);}
         if(op=="refresh"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::refresh(window);}
         if(op=="popup_capture"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::popups(window,j.get());}
+        if(op=="popup_list")return Capture::list(window);
         require(window->acceptsInput(),"Target refuses input");
         require(!g_pSessionLockManager->isSessionLocked(),"Session locked");
         require(!g_pInputManager->hasHeldButtons(),"Physical mouse button held");

@@ -13,7 +13,7 @@ from .paths import project_root
 # X11 helper's private keyboard holds exactly the target's keys for each run.
 held = {}
 X11_OPERATIONS = ('click', 'move', 'drag', 'scroll', 'key', 'text', 'point', 'ax_probe', 'ax_probe_clear',
-                  'ax_probe_end', 'popup_capture', 'hold', 'button', 'drag_motion')
+                  'ax_probe_end', 'popup_capture', 'popup_list', 'hold', 'button', 'drag_motion')
 ACTIVATING = ('drag', 'click', 'key', 'text', 'hold', 'button', 'drag_motion')
 
 
