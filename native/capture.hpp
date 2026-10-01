@@ -59,6 +59,43 @@ class MemoryBuffer final : public IHLBuffer {
     void endDataPtr()override{}
     void sendRelease()override{}
 };
+// Hyprland's makeSnapshotFB(popup) refuses popups whose window is not being
+// rendered (another workspace), although their surfaces hold current buffers.
+// Render the popup's surface tree the same way without that visibility check.
+inline SP<Render::IFramebuffer> render(SP<Desktop::View::CPopup> popup,PHLMONITOR monitor){
+    if(!monitor->m_output || monitor->m_pixelSize.x<=0 || monitor->m_pixelSize.y<=0)return nullptr;
+    auto renderer=g_pHyprRenderer.get();
+    CRegion damage{0,0,monitor->m_transformedSize.x,monitor->m_transformedSize.y};
+    auto fb=renderer->createFB("codex popup capture");
+    if(!fb->alloc(monitor->m_pixelSize.x,monitor->m_pixelSize.y,DRM_FORMAT_ABGR8888))return nullptr;
+    fb->setImageDescription(monitor->workBufferImageDescription());
+    if(!renderer->beginFullFakeRender(monitor,damage,fb))return nullptr;
+    renderer->m_bRenderingSnapshot=true;
+    renderer->draw(CClearPassElement::SClearData{CHyprColor(0,0,0,0)});
+    CSurfacePassElement::SRenderData data;
+    data.pos=popup->coordsGlobal();data.alpha=1.F;data.dontRound=true;data.pMonitor=monitor;data.squishOversized=false;data.popup=true;data.blur=false;
+    popup->wlSurface()->resource()->breadthfirst([&](SP<CWLSurfaceResource> surface,const Vector2D& offset,void*){
+        if(!surface->m_current.texture || surface->m_current.size.x<1 || surface->m_current.size.y<1)return;
+        data.localPos=offset;data.texture=surface->m_current.texture;data.surface=surface;data.mainSurface=false;
+        renderer->m_renderPass.add(makeUnique<CSurfacePassElement>(data));data.surfaceCounter++;
+    },nullptr);
+    renderer->endRender();
+    renderer->m_bRenderingSnapshot=false;
+    return fb;
+}
+// Mapped popup geometry relative to the window, without rendering.
+inline std::string list(PHLWINDOW window){
+    Json result(json_object_new_object(),json_object_put);json_object_object_add(result.get(),"ok",json_object_new_boolean(true));auto items=json_object_new_array();json_object_object_add(result.get(),"popups",items);
+    auto origin=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);int count=0;
+    if(window->m_popupHead)window->m_popupHead->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
+        if(!popup->m_mapped || !popup->wlSurface() || !popup->wlSurface()->resource() || ++count>64)return;
+        auto item=json_object_new_object();auto number=[&](const char* key,double value){json_object_object_add(item,key,json_object_new_double(value));};
+        auto position=popup->coordsGlobal();
+        number("x",position.x-origin.x);number("y",position.y-origin.y);number("w",popup->size().x);number("h",popup->size().y);
+        json_object_array_add(items,item);
+    },nullptr);
+    return json_object_to_json_string_ext(result.get(),JSON_C_TO_STRING_PLAIN);
+}
 inline std::string popups(PHLWINDOW window,json_object* request){
     auto path=str(request,"path");auto runtime=getenv("XDG_RUNTIME_DIR");
     require(runtime && path.starts_with(std::string(runtime)+"/codex-cua-popup-"),"Invalid popup capture path");
@@ -69,7 +106,7 @@ inline std::string popups(PHLWINDOW window,json_object* request){
     window->m_popupHead->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
         if(!popup->m_mapped || !popup->wlSurface() || !popup->wlSurface()->resource())return;
         require(++count<=16,"Too many popup surfaces");auto monitor=popup->getMonitor();require(bool(monitor),"Popup has no monitor");
-        auto fb=g_pHyprRenderer->makeSnapshotFB(WP<Desktop::View::CPopup>(popup));require(bool(fb),"Cannot render popup surface");
+        auto fb=render(popup,monitor);require(bool(fb),"Cannot render popup surface");
         auto buffer=makeShared<MemoryBuffer>(fb->m_size);require(fb->readPixels(CHLBufferReference(buffer)),"Cannot read popup pixels");
         require(offset+buffer->bytes.size()<=128*1024*1024,"Popup captures exceed limit");
         for(size_t n=0;n<buffer->bytes.size();){auto written=write(file.fd,buffer->bytes.data()+n,buffer->bytes.size()-n);if(written<0&&errno==EINTR)continue;require(written>0,"Cannot write popup capture");n+=written;}

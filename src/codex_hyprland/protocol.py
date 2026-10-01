@@ -60,7 +60,8 @@ def serve(backend, source, sink):
         request = None
         try:
             request = json.loads(line, parse_constant=lambda v: (_ for _ in ()).throw(ValueError(f"Invalid number: {v}")))
-            output = dispatch(backend, request)
+            with backend.ax.lock:
+                output = dispatch(backend, request)
             result = {"id": request["id"], "ok": True, "output": output}
         except Exception as exc:
             ident = request.get("id") if isinstance(request, dict) else None
@@ -84,6 +85,7 @@ def main():
             from .accessibility import enable_session_accessibility
             ensure_loaded()
             enable_session_accessibility()
+            backend.ax.drain_in_background()
             serve(backend, sys.stdin, sys.stdout)
     finally:
         backend.close()
