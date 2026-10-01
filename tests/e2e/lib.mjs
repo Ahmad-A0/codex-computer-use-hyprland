@@ -151,7 +151,8 @@ export function seatViolation(before) {
   // On a live desktop the user may move these; check only what we could cause.
   const active = hypr('activewindow');
   if (String(active.class ?? '').startsWith('codex-e2e') || String(active.title ?? '').startsWith('Codex E2E')) {
-    return `focus moved to ${active.class} (${active.title})`;
+    // The workspace tells our doing apart from the user looking at the codex workspace.
+    return `focus moved to ${active.class} (${active.title}) on workspace ${hypr('activeworkspace').name}`;
   }
   if (hypr('activeworkspace').name === 'codex') return 'switched to the codex workspace';
   return null;

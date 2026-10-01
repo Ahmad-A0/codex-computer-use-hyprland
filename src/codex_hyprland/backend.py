@@ -852,7 +852,9 @@ class Backend:
             env["CODEX_HYPRLAND_PLACEMENT"] = workspace or "current"
             command = shlex.join(["env", *(f"{k}={v}" for k, v in env.items()), sys.executable,
                                   "-m", "codex_hyprland.launch", matches[0].get_id(), str(status)])
-            placement = "" if workspace in ("", "current") else f"workspace {workspace} silent; "
+            # Windows on the agent's workspace float at their own size, as macOS
+            # windows overlap; tiling would shrink each app as more are opened.
+            placement = "" if workspace in ("", "current") else f"workspace {workspace} silent; float on; "
             command = f"[{placement}no_initial_focus on; focus_on_activate off] " + command
             if self.hypr.provider() == self.hypr.LUA:
                 result = self.hypr._run("dispatch", "hl.dsp.exec_cmd(" + self.hypr.lua_str(command) + ")")
