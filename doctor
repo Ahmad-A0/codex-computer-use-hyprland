@@ -1,28 +1,4 @@
 #!/bin/sh
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-cd "$project_dir"
-for tool in uv hyprctl grim wl-paste; do
-  command -v "$tool" >/dev/null || { echo "Missing: $tool" >&2; exit 1; }
-done
-. "$project_dir/scripts/runtime.sh"
-if [ ! -x .venv/bin/python ]; then
-  echo 'Python environment missing; run ./install.' >&2
-  exit 1
-fi
-running=$(hyprctl version -j | .venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["abiHash"])')
-installed=$(./scripts/hyprland-abi.sh)
-if [ "$running" != "$installed" ]; then
-  echo "Hyprland was upgraded (running $running, headers $installed); log out and back in." >&2
-elif [ ! -f "build/native/$running/codex-background.so" ]; then
-  echo 'Native plugin not built for this Hyprland; it builds on first use (or run ./scripts/build-native.sh).' >&2
-else
-  echo "Native plugin built for Hyprland ABI $running"
-fi
-UV_PROJECT_ENVIRONMENT="$project_dir/.venv" uv sync --locked --check --no-editable --no-dev
-"$CODEX_CUA_RUNTIME/bin/node" --input-type=module -e '
-import {reviewRuntime} from "./scripts/prepare-runtime.mjs";
-console.log("Codex runtime:", reviewRuntime(process.env.CODEX_CUA_RUNTIME).revisions);
-'
-.venv/bin/python -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi, Gio; from PIL import Image'
-./bin/sky-hyprland doctor
+exec "$project_dir/bin/codex-computer-use-hyprland" doctor

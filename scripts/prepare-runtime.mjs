@@ -3,6 +3,7 @@ import {cpSync, readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, 
 import {join, resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {cacheDir} from './paths.mjs';
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 const cuaFile='dist/lib/js/oai_js_cua/src/tinysky_alt/create_tinysky_alt.js';
 const appFile='dist/lib/js/oai_js_cua/src/tinysky_alt/bind_linux_app.js';
@@ -57,7 +58,7 @@ export function reviewRuntime(runtime) {
 }
 export function prepareRuntime(runtime) {
   const {source,hash,revisions}=reviewRuntime(runtime);
-  const output=join(root,'build','runtime',hash,'node_modules');
+  const output=join(cacheDir(),'runtime',hash,'node_modules');
   if(existsSync(join(output,'parity-ready.json'))) return output;
   const temp=output+`.${process.pid}.tmp`;mkdirSync(join(temp,'@oai'),{recursive:true});
   for(const pkg of packages) cpSync(join(source,pkg),join(temp,'@oai',pkg),{recursive:true});

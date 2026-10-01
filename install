@@ -12,17 +12,5 @@ if [ "$#" -gt 1 ]; then
 fi
 . "$project_dir/scripts/runtime.sh"
 ./scripts/setup.sh
-./scripts/build-native.sh >/dev/null
-"$CODEX_CUA_RUNTIME/bin/node" scripts/configure.mjs --browser |
-  .venv/bin/python scripts/register-provider.py "$@"
-# Rebuild the plugin as soon as a Hyprland upgrade installs new headers, so the
-# next login finds a matching build. First use also builds it if this is absent.
-if systemctl --user show-environment >/dev/null 2>&1; then
-  units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-  mkdir -p "$units"
-  cp systemd/codex-hyprland-prebuild.path "$units/"
-  sed "s|@ROOT@|$project_dir|" systemd/codex-hyprland-prebuild.service > "$units/codex-hyprland-prebuild.service"
-  systemctl --user daemon-reload
-  systemctl --user enable --now codex-hyprland-prebuild.path >/dev/null 2>&1
-fi
-echo 'Installed. Start a new Codex session; the native plugin loads on first use.'
+# Same registration as the system package's `codex-computer-use-hyprland register`.
+exec ./bin/codex-computer-use-hyprland register "$@"

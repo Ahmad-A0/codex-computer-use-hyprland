@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$project_dir/scripts/paths.sh"
 export CODEX_HYPRLAND_ROOT="$project_dir"
-exec "$project_dir/.venv/bin/python" -m codex_hyprland.protocol "$@"
+exec "$python_bin" -m codex_hyprland.protocol "$@"

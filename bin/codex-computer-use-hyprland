@@ -1,0 +1,128 @@
+#!/bin/sh
+# Command-line entry point, shared by a git checkout (./install, ./doctor) and
+# the system package (/usr/bin/codex-computer-use-hyprland is a symlink here).
+set -eu
+project_dir=$(dirname -- "$(dirname -- "$(readlink -f -- "$0")")")
+. "$project_dir/scripts/paths.sh"
+unit=codex-hyprland-prebuild
+units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+
+usage() {
+  cat <<EOF
+Usage: ${0##*/} <command> [options]
+
+  register [--project] [--no-systemd]
+                Build the plugin for the installed Hyprland, register cua_repl in
+                \${CODEX_HOME:-~/.codex}/config.toml (a backup is kept; other
+                settings are preserved), and enable the user unit
+                $unit.path that rebuilds the plugin after Hyprland upgrades.
+                --project registers in this checkout's .codex/ instead.
+  unregister [--project] [--no-systemd]
+                Remove this installation's cua_repl entry (with a backup) and
+                disable the prebuild unit. Cached builds stay in $cache_dir.
+  doctor        Check prerequisites, the Codex runtime and desktop inventory.
+  build         Build the plugin for the installed Hyprland headers now.
+  serve         Run the cua_repl MCP stdio server (what Codex starts).
+EOF
+}
+
+command=${1:-}
+[ "$#" -gt 0 ] && shift
+project= systemd=1
+if [ "$command" = register ] || [ "$command" = unregister ]; then
+  for option in "$@"; do
+    case "$option" in
+      --project) project=--project ;;
+      --no-systemd) systemd= ;;
+      *) usage >&2; exit 2 ;;
+    esac
+  done
+  if [ -n "$project" ] && [ -z "$checkout" ]; then
+    echo '--project registers for a git checkout; the package registers per user.' >&2
+    exit 2
+  fi
+  [ -n "$systemd" ] && systemctl --user show-environment >/dev/null 2>&1 || systemd=
+elif [ "$#" -gt 0 ]; then
+  usage >&2; exit 2
+fi
+
+# A checkout installs its own unit copy pointing at itself; the package ships
+# the unit in /usr/lib/systemd/user. A user copy takes precedence over it.
+user_unit_is_other() {
+  [ -f "$units/$unit.service" ] && ! grep -qF "ExecStart=$project_dir/scripts/build-native.sh" "$units/$unit.service"
+}
+
+case "$command" in
+  register)
+    . "$project_dir/scripts/runtime.sh"
+    "$project_dir/scripts/build-native.sh" >/dev/null
+    "$CODEX_CUA_RUNTIME/bin/node" "$project_dir/scripts/configure.mjs" --browser |
+      "$python_bin" "$project_dir/scripts/register-provider.py" $project
+    # Rebuild the plugin as soon as a Hyprland upgrade installs new headers, so
+    # the next login finds a matching build. First use also builds it if absent.
+    if [ -n "$systemd" ]; then
+      if [ -n "$checkout" ]; then
+        mkdir -p "$units"
+        cp "$project_dir/systemd/$unit.path" "$units/"
+        sed "s|@ROOT@|$project_dir|" "$project_dir/systemd/$unit.service" > "$units/$unit.service"
+      elif user_unit_is_other; then
+        echo "Note: $units/$unit.service (from a checkout) overrides the packaged unit; remove it and its .path to use this installation's." >&2
+      fi
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$unit.path" >/dev/null 2>&1
+    fi
+    echo 'Registered. Start a new Codex session; the native plugin loads on first use.'
+    ;;
+  unregister)
+    "$python_bin" "$project_dir/scripts/register-provider.py" --remove $project
+    if [ -n "$systemd" ] && ! user_unit_is_other; then
+      systemctl --user disable --now "$unit.path" >/dev/null 2>&1 || true
+      if [ -n "$checkout" ]; then
+        rm -f "$units/$unit.path" "$units/$unit.service"
+        systemctl --user daemon-reload
+      fi
+    fi
+    echo "Unregistered. A loaded plugin stays in Hyprland until logout; cached builds in $cache_dir can be deleted."
+    ;;
+  doctor)
+    for tool in hyprctl grim wl-paste ${checkout:+uv}; do
+      command -v "$tool" >/dev/null || { echo "Missing: $tool" >&2; exit 1; }
+    done
+    . "$project_dir/scripts/runtime.sh"
+    if [ ! -x "$python_bin" ]; then
+      [ -n "$checkout" ] && echo 'Python environment missing; run ./install.' >&2 || echo "Missing $python_bin." >&2
+      exit 1
+    fi
+    running=$(hyprctl version -j | "$python_bin" -c 'import json,sys; print(json.load(sys.stdin)["abiHash"])')
+    installed=$("$project_dir/scripts/hyprland-abi.sh")
+    if [ "$running" != "$installed" ]; then
+      echo "Hyprland was upgraded (running $running, headers $installed); log out and back in." >&2
+    elif [ ! -f "$cache_dir/native/$running/codex-background.so" ]; then
+      echo "Native plugin not built for this Hyprland; it builds on first use (or run ${0##*/} build)." >&2
+    else
+      echo "Native plugin built for Hyprland ABI $running in $cache_dir/native"
+    fi
+    if [ -n "$checkout" ]; then
+      UV_PROJECT_ENVIRONMENT="$project_dir/.venv" uv sync --locked --check --no-editable --no-dev --project "$project_dir"
+    fi
+    CODEX_HYPRLAND_PREPARE="$project_dir/scripts/prepare-runtime.mjs" "$CODEX_CUA_RUNTIME/bin/node" --input-type=module -e '
+const {reviewRuntime} = await import(process.env.CODEX_HYPRLAND_PREPARE);
+console.log("Codex runtime:", reviewRuntime(process.env.CODEX_CUA_RUNTIME).revisions);
+'
+    "$python_bin" -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi, Gio; from PIL import Image; import markdown_it, tomlkit'
+    "$project_dir/bin/sky-hyprland" doctor
+    ;;
+  build)
+    "$project_dir/scripts/build-native.sh"
+    ;;
+  serve)
+    . "$project_dir/scripts/runtime.sh"
+    exec "$CODEX_CUA_RUNTIME/bin/node" "$project_dir/scripts/launch.mjs"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2; exit 2
+    ;;
+esac

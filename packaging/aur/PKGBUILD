@@ -1,0 +1,73 @@
+# Maintainer: Ahmad-A0 <ahmadadebowale1 at gmail dot com>
+#
+# Release: tag vX.Y.Z on GitHub, set pkgver, run `updpkgsums` (replaces SKIP with
+# the tarball's sha256) and `makepkg --printsrcinfo > .SRCINFO`.
+# Local test build from a working tree: packaging/aur/build-local.sh.
+
+pkgname=codex-computer-use-hyprland
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Hyprland backend for the Codex computer-use (cua_repl) API'
+arch=('x86_64')
+url='https://github.com/Ahmad-A0/codex-computer-use-hyprland'
+# TODO: the repository has no LICENSE yet; choose one before publishing.
+license=('unknown')
+# The compositor plugin can only be compiled against the Hyprland that is
+# installed when it runs: Hyprland checks the plugin ABI (its commit and
+# dependency versions) when loading, and the build must match the running
+# compositor. It is therefore compiled per user, per Hyprland ABI, on first use
+# (and by the codex-hyprland-prebuild.path user unit after a Hyprland upgrade)
+# into ~/.cache/codex-computer-use-hyprland. That runtime build needs a C++23
+# compiler, pkg-config and the headers/.pc files of Hyprland and the libraries
+# below, so those are runtime dependencies here, not makedepends.
+depends=(
+  'hyprland'        # headers and hyprland.pc ship with the package
+  'gcc' 'pkgconf'   # runtime plugin build (see above)
+  'util-linux'      # flock serializes plugin builds and reloads
+  'json-c' 'libxkbcommon' 'pixman' 'libdrm' 'libinput' 'systemd-libs'
+  'libx11' 'libxi' 'libxtst' 'libxcomposite' 'libxres' 'libxfixes'
+  'glibc' 'libgcc' 'libstdc++'
+  'grim' 'wl-clipboard'
+  'python' 'python-gobject' 'at-spi2-core' 'python-pillow'
+  'python-markdown-it-py' 'python-tomlkit'
+)
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+optdepends=('chatgpt-bin: Codex desktop app that provides the cua_node runtime (or set CODEX_CUA_RUNTIME)')
+install=$pkgname.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  python -m build --wheel --no-isolation
+  # The ABI-independent X11 helpers are built here, honouring makepkg's flags.
+  scripts/build-native.sh --helpers build/helpers
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  local root=/usr/lib/$pkgname
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  # Codex reaches the backend through $root/bin/sky-hyprland; keep the wheel's
+  # generic console script off PATH.
+  rm "$pkgdir/usr/bin/sky-hyprland"
+
+  # Read-only provider files. pyproject.toml is deliberately not installed: its
+  # presence marks a git checkout (scripts/paths.sh, src/codex_hyprland/paths.py).
+  install -Dm755 -t "$pkgdir$root/bin" bin/codex-computer-use-hyprland bin/cua-repl-hyprland bin/sky-hyprland
+  install -Dm644 -t "$pkgdir$root/scripts" \
+    scripts/{launch,paths,configure,prepare-runtime}.mjs scripts/{ax-diff,app-approval}.js \
+    scripts/register-provider.py scripts/{runtime,paths}.sh
+  install -Dm755 -t "$pkgdir$root/scripts" scripts/{build-native,hyprland-abi}.sh
+  install -Dm644 -t "$pkgdir$root/native" native/*.cpp native/*.hpp  # per-ABI plugin rebuilds
+  install -Dm755 -t "$pkgdir$root" build/helpers/codex-x11 build/helpers/codex-xclipboard
+  install -dm755 "$pkgdir/usr/bin"
+  ln -s "$root/bin/$pkgname" "$pkgdir/usr/bin/$pkgname"
+
+  # Enabled per user by `codex-computer-use-hyprland register`.
+  install -Dm644 -t "$pkgdir/usr/lib/systemd/user" systemd/codex-hyprland-prebuild.path
+  sed "s|@ROOT@|$root|" systemd/codex-hyprland-prebuild.service |
+    install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/codex-hyprland-prebuild.service"
+
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md
+}

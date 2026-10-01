@@ -7,7 +7,7 @@ import contextlib
 import time
 from pathlib import Path
 from . import desktop as hyprctl
-from .paths import project_root
+from .paths import helper
 
 # Keys each XWayland window holds (Sky key_down and per-action chords). The
 # X11 helper's private keyboard holds exactly the target's keys for each run.
@@ -20,7 +20,7 @@ ACTIVATING = ('drag', 'click', 'key', 'text', 'hold', 'button', 'drag_motion')
 def x11_release(display):
     """Release every key and button the private X11 devices still hold."""
     request = json.dumps({'op': 'release_all', 'display': display})
-    subprocess.run([str(project_root() / 'build/codex-x11'), request], capture_output=True, timeout=10)
+    subprocess.run([str(helper('codex-x11')), request], capture_output=True, timeout=10)
 
 
 def send(client, operation, **fields):
@@ -28,11 +28,11 @@ def send(client, operation, **fields):
         info = send(client, 'x11_info')
         request = dict(op=operation, xid=info['xid'], display=info['display'], width=client['size'][0], height=client['size'][1],
                        held=held.get(client['address'], []), **fields)
-        helper = project_root() / 'build/codex-x11'
+        program = helper('codex-x11')
         if operation in ACTIVATING:
             send(client, 'activation_begin')
         try:
-            result = subprocess.run([str(helper), json.dumps(request)], capture_output=True, text=True, timeout=60)
+            result = subprocess.run([str(program), json.dumps(request)], capture_output=True, text=True, timeout=60)
         finally:
             if operation in ACTIVATING:
                 send(client, 'activation_end')

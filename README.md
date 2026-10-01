@@ -33,17 +33,42 @@ X11/XInput2/XTest/XComposite/XRes development libraries, and Hyprland's build de
 On Arch the Python bindings are `python-gobject`, `at-spi2-core`, and
 `python-pillow`. Use the distribution Python to access those bindings.
 
+From a source checkout:
+
 ```sh
 ./install
 ./doctor
 ```
+
+As an Arch package (`packaging/aur/PKGBUILD`; not yet published), run once per
+user after installing it:
+
+```sh
+codex-computer-use-hyprland register   # unregister removes the entry again
+codex-computer-use-hyprland doctor
+```
+
+The package installs read-only files in `/usr/lib/codex-computer-use-hyprland/`,
+the Python package into the system site-packages (no virtual environment), and
+the prebuild user unit in `/usr/lib/systemd/user/`. Per-user builds go to
+`${XDG_CACHE_HOME:-~/.cache}/codex-computer-use-hyprland/` and locks to
+`$XDG_RUNTIME_DIR/codex-computer-use-hyprland/`; a checkout keeps both in `build/`.
+A root containing `pyproject.toml` is a checkout (`src/codex_hyprland/paths.py`,
+mirrored by `scripts/paths.sh` and `scripts/paths.mjs`); `CODEX_HYPRLAND_CACHE_DIR`
+overrides the cache directory. `register` builds the plugin, merges `cua_repl`
+into the Codex config like `./install`, and enables the prebuild unit;
+`unregister` removes only this installation's `cua_repl` entry (with a backup)
+and disables the unit. `packaging/aur/build-local.sh` test-builds the package
+from the working tree with `makepkg` without installing it.
 
 `./install` uses the committed `uv.lock` to install Python dependencies, builds
 the native helpers, prepares the compatible runtime overlay, and registers
 `cua_repl` in `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). Other config
 settings and comments are preserved, with a backup before changes. Use
 `./install --project` to register only for this checkout. Start a new Codex
-session to use the provider; its native module loads on first use.
+session to use the provider; its native module loads on first use. `./install`
+and `./doctor` run the same `bin/codex-computer-use-hyprland register`/`doctor`
+commands as the package.
 
 uv manages the generated `.venv` using the distribution Python and its
 Gio/AT-SPI/Pillow bindings. No environment activation is needed. The package is
@@ -72,11 +97,11 @@ without that metadata cannot validate browser connectivity. Custom trusted brows
 services and browser environment settings are preserved.
 
 The compositor plugin is cached per Hyprland plugin ABI in
-`build/native/<abi>/` (the ABI string is the one `hyprctl version` reports as
+`<cache>/native/<abi>/`, `<cache>` being the directory above (the ABI string is the one `hyprctl version` reports as
 `abiHash`). A new provider process loads the build for the running compositor,
 compiling it first if needed (about 20 seconds). After a Hyprland upgrade the
 running session keeps its old build; the new one is used after the next login.
-`./install` also enables a user `codex-hyprland-prebuild.path` unit that compiles
+Registration also enables a user `codex-hyprland-prebuild.path` unit that compiles
 for the new headers as soon as pacman installs them, so that login needs no build.
 A compile failure means Hyprland changed an internal API the plugin uses, which
 needs a provider update. Upgrades drain clipboard resources and refuse to unload
@@ -85,7 +110,7 @@ atomically, and the module still checks the compositor ABI when loading.
 
 To unload safely, send `hyprctl codex-background '{"op":"drain"}'`, wait until
 `{"op":"status"}` reports `busy: false` and `offers: 0`, then run
-`hyprctl plugin unload "$PWD/build/native/<abi>/codex-background.so"` in the intended session.
+`hyprctl plugin unload "<cache>/native/<abi>/codex-background.so"` in the intended session.
 Do not forcibly unload a module whose clipboard offers are still held by apps.
 
 ## API coverage

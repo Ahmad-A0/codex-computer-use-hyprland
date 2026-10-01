@@ -171,11 +171,11 @@ def wayland_snapshot(client, info):
 
 def x11_owner(client, request):
     """Start the X11 selection helper; return it, its reply reader and x11_info."""
-    from .paths import project_root
+    from .paths import helper
     info = background.send(client, 'x11_info')
     if info.get('clipboard_wayland'):
         info['wayland_snapshot'] = wayland_snapshot(client, info)
-    process = subprocess.Popen([str(project_root() / 'build/codex-xclipboard')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    process = subprocess.Popen([str(helper('codex-xclipboard'))], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
     def reply():
         if not select.select([process.stdout], [], [], 12)[0]:

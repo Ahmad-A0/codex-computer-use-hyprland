@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { prepareRuntime } from './prepare-runtime.mjs';
+import { root, checkout, python, cacheDir } from './paths.mjs';
 
-export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+export { root };
 export function resolveRuntime(input = process.env) {
   if (input.CODEX_CUA_RUNTIME) return resolve(input.CODEX_CUA_RUNTIME);
   const candidates = ['/usr/lib/chatgpt/resources/cua_node', '/opt/codex-desktop/resources/cua_node'];
@@ -21,8 +22,8 @@ export function environment(input = process.env) {
   const launcher = join(modules, '@oai/cua-repl/bin/cua-repl.mjs');
   const repl = input.CUA_REPL_NODE_REPL_PATH ?? join(runtime, 'bin/node_repl');
   const backend = join(root, 'bin/sky-hyprland');
-  for (const path of [executable, launcher, repl, backend, join(root, '.venv/bin/python')]) {
-    if (!existsSync(path)) throw new Error(`Missing ${path}; run scripts/setup.sh or set CODEX_CUA_RUNTIME.`);
+  for (const path of [executable, launcher, repl, backend, python]) {
+    if (!existsSync(path)) throw new Error(`Missing ${path}; ${checkout ? 'run scripts/setup.sh' : 'reinstall the package'} or set CODEX_CUA_RUNTIME.`);
   }
   const surfaces = input.CUA_REPL_ENABLED_SURFACES ?? 'computer';
   const overlay = prepareRuntime(runtime);
@@ -44,6 +45,7 @@ export function environment(input = process.env) {
     ...input,
     ...browserEnv,
     CODEX_HYPRLAND_ROOT: root,
+    CODEX_HYPRLAND_CACHE_DIR: cacheDir(input),
     OAI_SKY_LINUX_BIN: backend,
     CUA_REPL_ENABLED_SURFACES: surfaces,
     CUA_REPL_NODE_REPL_PATH: repl,
