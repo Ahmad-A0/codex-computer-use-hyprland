@@ -236,7 +236,7 @@ class Backend:
     def window(self, c, active=None):
         wid = positive_id(int(c["address"], 16))
         self.identities.setdefault(wid, (c["pid"], c.get("initialClass", c.get("class"))))
-        return {"id": wid, "app": c.get("class") or c.get("initialClass") or "unknown",
+        return {"id": wid, "pid": c["pid"], "app": c.get("class") or c.get("initialClass") or "unknown",
                 "title": c.get("title", ""), "x": c["at"][0], "y": c["at"][1],
                 "width": c["size"][0], "height": c["size"][1],
                 "focused": c["address"] == active, "modal": False,
@@ -298,9 +298,18 @@ class Backend:
         if client is None:
             raise ValueError(f"Window {wid} is unavailable")
         identity = (client["pid"], client.get("initialClass", client.get("class")))
-        if wid in self.identities and self.identities[wid] != identity:
+        # Hyprland reuses window addresses. A window object carries its owner's
+        # PID, so a fresh listWindows() entry binds the new window while a stale
+        # binding to the old one is refused.
+        claimed = value.get("pid")
+        if claimed is not None:
+            if claimed != client["pid"]:
+                raise ValueError("Window ID was reused; restart the binding")
+            self.identities[wid] = identity
+        elif self.identities.get(wid, identity) != identity:
             raise ValueError("Window ID was reused; restart the binding")
-        self.identities.setdefault(wid, identity)
+        else:
+            self.identities.setdefault(wid, identity)
         self.trust.guard_client(client)
         return client
 

@@ -128,6 +128,12 @@ export async function bind(variable, app, options) {
   await js(`globalThis.${variable} = await cua.getApp(${JSON.stringify(app)});`, options);
 }
 
+/** Bind an app unless an earlier test already did, so any test can run alone. */
+export async function ensure(variable, app, options) {
+  const bound = await js(`await nodeRepl.write(String(typeof globalThis.${variable} !== "undefined"))`);
+  if (!bound.trim().endsWith('true')) await bind(variable, app, options);
+}
+
 export const seat = () => JSON.stringify([hypr('activewindow').address, hypr('activeworkspace').id, hypr('cursorpos')]);
 /** Background control must never move focus, switch workspaces or move the pointer. */
 export function seatViolation(before) {

@@ -1,5 +1,5 @@
 // Windows an app opens itself, and windows that look identical.
-import { clients, entry, expect, gtkFixture, hypr, js, out, rejects, state, stateOf, until } from '../lib.mjs';
+import { clients, ensure, entry, expect, gtkFixture, hypr, js, out, rejects, state, stateOf, until } from '../lib.mjs';
 import { join } from 'node:path';
 
 entry('codex-e2e-twin', 'Codex E2E Twin',
@@ -9,6 +9,7 @@ const dialog = () => clients().find((c) => c.title === 'Codex E2E Dialog');
 
 export default function (test) {
   test('dialog: an app-opened dialog stays out of the user\'s way', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.click(await e2eFind(gtk, "Open dialog", "button"));`);
     await until(() => Boolean(dialog()), 'dialog window', 10000);
     // Like the app's main window it must not take focus or land on the user's workspace.
@@ -17,6 +18,7 @@ export default function (test) {
   });
 
   test('dialog: the agent finds and drives it', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     if (!dialog()) await js(`await gtk.click(await e2eFind(gtk, "Open dialog", "button"));`);
     await until(() => Boolean(dialog()), 'dialog window', 10000);
     await js(`globalThis.dlg = await cua.getApp({ windowId: (await e2eWindow("Codex E2E Dialog")).id });

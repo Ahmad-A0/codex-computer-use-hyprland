@@ -1,6 +1,6 @@
 // The public app API against a GTK app, on Wayland and XWayland.
 import { readFileSync } from 'node:fs';
-import { bind, client, clients, expect, gtk, js, provider, state, until } from '../lib.mjs';
+import { bind, client, clients, ensure, expect, gtk, js, provider, state, until } from '../lib.mjs';
 
 gtk('codex-e2e-gtk', 'Codex E2E GTK');
 gtk('codex-e2e-xgtk', 'Codex E2E XWayland', { backend: 'x11' });
@@ -19,44 +19,52 @@ export default function (test) {
   });
 
   test('GTK: setValue with Unicode', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.setValue(await e2eFind(gtk, "E2E entry", "text"), "first café / second café");`);
     await until(() => state('codex-e2e-gtk').text === 'first café / second café', 'entry text');
   });
 
   test('GTK: selectText with prefix', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.selectText(await e2eFind(gtk, "E2E entry", "text"), "café", { prefix: "second " });`);
     await until(() => JSON.stringify(state('codex-e2e-gtk').selection) === '[20,24]', 'selection');
   });
 
   test('GTK: click, cmd+a, paste', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.click(i); await gtk.pressKey("cmd+a");
       await gtk.paste("Pasted 世界 ✓", { format: "text" }); await gtk.getAXState({ emit: false });`);
     await until(() => state('codex-e2e-gtk').text === 'Pasted 世界 ✓', 'pasted text');
   });
 
   test('GTK: typeText', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.click(i); await gtk.pressKey("ctrl+a");
       await gtk.typeText("typed é"); await gtk.getAXState({ emit: false });`);
     await until(() => state('codex-e2e-gtk').text === 'typed é', 'typed text');
   });
 
   test('GTK: numeric setValue', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.setValue(await e2eFind(gtk, "E2E slider"), "37");`);
     await until(() => state('codex-e2e-gtk').value === 37, 'slider value');
   });
 
   test('GTK: element click on a button', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.click(await e2eFind(gtk, "E2E button", "button")); await gtk.getAXState({ emit: false });`);
     await until(() => state('codex-e2e-gtk').clicks === 1, 'button clicks');
   });
 
   test('GTK: element double-click selects a word', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.setValue(i, Array(30).fill("wordy").join(" "));
       await gtk.click(i, { clickCount: 2 }); await gtk.getAXState({ emit: false });`);
     await until(() => { const [a, b] = state('codex-e2e-gtk').selection; return b - a === 5; }, 'word selection');
   });
 
   test('GTK: right-click menu is observable and usable', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     // On macOS a context menu appears in the app's accessibility tree.
     await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.setValue(i, "menu target");
       await gtk.click(i, { mouseButton: "right" });
@@ -67,11 +75,13 @@ export default function (test) {
   });
 
   test('GTK: scroll one page', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.scroll(await e2eFind(gtk, "E2E viewport"), "down", 1); await gtk.getAXState({ emit: false });`);
     await until(() => state('codex-e2e-gtk').scroll > 0, 'scrolled');
   });
 
   test('GTK: macOS-format diffs and no-change notice', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     const text = await js(`await e2eFind(gtk, "E2E slider");
       await gtk.setValue(await e2eFind(gtk, "E2E entry", "text"), "diff check");
       await e2eFind(gtk, "E2E slider"); // a full-tree read resets the baseline
@@ -85,6 +95,7 @@ export default function (test) {
   });
 
   test('GTK: screenshots of a window on another workspace are current', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     const text = await js(`const before = await gtk.getScreenshot({ emit: false });
       await gtk.setValue(await e2eFind(gtk, "E2E entry", "text"), "W".repeat(40));
       const after = await gtk.getScreenshot({ emit: false });
@@ -97,6 +108,7 @@ export default function (test) {
   });
 
   test('GTK: getApp reuses the running app', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     const before = clients().length;
     await js(`await cua.getApp("Codex E2E GTK");`);
     expect(clients().length === before, 'a second window was opened');
