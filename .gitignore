@@ -7,3 +7,4 @@ node_modules/
 *.egg-info/
 .codex/config.toml
 build/
+.claude/worktrees/

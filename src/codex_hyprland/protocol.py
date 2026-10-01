@@ -75,7 +75,9 @@ def main():
                               "apps": len(backend.list_apps({})), "at_spi": True}))
         else:
             from .lifecycle import ensure_loaded
+            from .accessibility import enable_session_accessibility
             ensure_loaded()
+            enable_session_accessibility()
             serve(backend, sys.stdin, sys.stdout)
     finally:
         backend.close()

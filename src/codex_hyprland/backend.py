@@ -15,7 +15,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from .accessibility import Accessibility
+from .accessibility import Accessibility, LAUNCH_ENVIRONMENT
 from . import background, session, desktop, guards
 
 
@@ -520,6 +520,7 @@ class Backend:
         status = Path(self.directory.name) / ('launch-' + uuid.uuid4().hex + '.json')
         with self.seat():
             env = {k: os.environ[k] for k in ("XDG_DATA_HOME", "XDG_DATA_DIRS", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY") if k in os.environ}
+            env.update(LAUNCH_ENVIRONMENT)
             command = shlex.join(["env", *(f"{k}={v}" for k, v in env.items()), sys.executable,
                                   "-m", "codex_hyprland.launch", matches[0].get_id(), str(status)])
             command = "[no_initial_focus on; focus_on_activate off] " + command

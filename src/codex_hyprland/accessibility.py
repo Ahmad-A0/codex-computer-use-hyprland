@@ -8,6 +8,25 @@ from __future__ import annotations
 import time
 
 
+# Toolkit switches for apps we launch: Chromium/Electron, Qt, and GTK/Firefox.
+LAUNCH_ENVIRONMENT = {"ACCESSIBILITY_ENABLED": "1", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON": "1",
+                      "GNOME_ACCESSIBILITY": "1"}
+
+
+def enable_session_accessibility():
+    """Set the session-wide AT-SPI flag that Chromium, Electron and Firefox read
+    before exposing a tree. macOS apps answer AX clients without this step.
+    Apps started while it was off may need a restart."""
+    from gi.repository import Gio, GLib
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        bus.call_sync("org.a11y.Bus", "/org/a11y/bus", "org.freedesktop.DBus.Properties", "Set",
+                      GLib.Variant("(ssv)", ("org.a11y.Status", "IsEnabled", GLib.Variant("b", True))),
+                      None, Gio.DBusCallFlags.NONE, 2000, None)
+    except GLib.Error:
+        pass  # No accessibility bus: observations fall back to compositor metadata.
+
+
 class Accessibility:
     def __init__(self, probe_context=None):
         import gi

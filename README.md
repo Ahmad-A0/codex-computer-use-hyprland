@@ -117,7 +117,7 @@ await app.getAXStateAndScreenshot();
 | Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture; coordinates follow the latest app screenshot |
 | Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS |
 | Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland |
-| `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control |
+| `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control. macOS key names work: `cmd`/`command` is Ctrl and `option` is Alt; `super` stays Super |
 | `selectText` | Text match, prefix/suffix disambiguation, selection or before/after caret placement; verified result |
 | `setValue` | Editable text replacement or finite, range-checked numeric value; verified result |
 | `paste` | Text/HTML/Markdown on Wayland and XWayland; Markdown rendered to HTML |
@@ -177,6 +177,13 @@ macOS `getAppPolicy` shape: system authentication dialogs are forbidden, termina
 emulators are high risk, and `CODEX_HYPRLAND_CONFINE` refuses apps outside its scope.
 Set `CODEX_HYPRLAND_APP_APPROVAL=0` only for unattended runs, such as the
 disposable-app validation. macOS binds a whole app; `getApp` here binds one window.
+
+macOS apps answer accessibility clients by default; Linux toolkits often need a
+switch. The provider sets the session's AT-SPI `IsEnabled` flag when it starts,
+and apps launched through `getApp` also get `ACCESSIBILITY_ENABLED=1`,
+`QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` and `GNOME_ACCESSIBILITY=1`. Chromium or
+Electron apps started earlier while the flag was off may need a restart. Terminal
+emulators expose no accessibility tree; use screenshots and coordinates there.
 
 The previously missing rich paste, cross-window X11 drag, popup routing/capture,
 and identical-window binding paths are implemented. Platform-specific limits remain:

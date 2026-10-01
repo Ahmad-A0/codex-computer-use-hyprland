@@ -20,6 +20,8 @@ const patches=[
   ...packages.map(pkg=>[pkg,linux+'/create_client.js','A={target:"linux",','A={target:"linux",'+additions]),
   ...packages.map(pkg=>[pkg,linux+'/create_client.js','Object.assign(A,t(x)),A}export{','Object.assign(A,t(x)),gateApps(x,A)}export{']),
 ];
+// Cosmetic patches (messages the agent reads) never block startup if they drift.
+const optionalPatches=packages.map(pkg=>[pkg,linux+'/element_ids.js','refresh get_window_state()','refresh getAXState()']);
 function replacePatch(source,pkg,path,from,to) {
   if(source.split(from).length!==2) throw new Error(`Runtime patch no longer matches @oai/${pkg}/${path}. Update the adapter for this source layout.`);
   return source.replace(from,to);
@@ -71,6 +73,10 @@ export function prepareRuntime(runtime) {
     writeFileSync(target,replacePatch(s,pkg,path,from,to));
   }
   for(const args of patches) patch(...args);
+  for(const [pkg,path,from,to] of optionalPatches) {
+    const target=join(temp,'@oai',pkg,path);
+    if(existsSync(target)) writeFileSync(target,readFileSync(target,'utf8').replace(from,to));
+  }
   for(const pkg of packages) {
     const target=join(temp,'@oai',pkg,linux,'create_client.js');
     writeFileSync(target,'import {sky_linux as parityTransport} from "./sky_linux.js";\nfunction parity(options, command) { return async function(input) { await options.action_settler.wait(); const result=await parityTransport(command,{options,input:options.element_ids.resolve(input)}); options.action_settler.defer(); if(command==="resolve_app") return JSON.parse(result); }; }\n'+readFileSync(join(root,'scripts/app-approval.js'),'utf8')+readFileSync(target,'utf8'));
@@ -85,6 +91,7 @@ export function prepareRuntime(runtime) {
       ['`getApp` does not launch apps on Linux or Windows.', '`getApp` does not launch apps on Windows. This Hyprland provider supports background launch when passed an app name or inventory ID.'],
       ['Linux and Windows app `paste` support only `text` and use the platform\'s native text input.', 'This Hyprland provider supports text, HTML, and rendered Markdown paste. Wayland uses private clipboard offers. XWayland temporarily owns the shared X clipboard and restores its prior formats unless a newer copy replaces them. Windows app paste supports only text.'],
       ['Native app `scroll` accepts a page count on macOS. On Linux, omit the distance for the native default or pass `{ pixels: 500 }`.', 'Native app `scroll` accepts a page count on macOS and this Hyprland provider. On Hyprland, omitted distance means one viewport page; `{ pixels: 500 }` specifies an exact distance.'],
+      ['Linux element clicks support one left or right click. Use coordinates for other click options.', 'As on macOS, element clicks on this Hyprland provider accept any mouse button and click count.'],
       ['Linux and Windows always return full accessibility state.', 'As on macOS, this Hyprland provider returns a diff unless `disableDiffing` is set; Windows always returns full accessibility state.'],
       ['`selectText` is unavailable on Linux and Windows. `setValue` is unavailable on Linux. These methods throw before sending input. Use the supported bound actions to edit the UI and verify the result.', 'This Hyprland provider implements `selectText` and `setValue` through AT-SPI text, editable-text, and value interfaces. Controls without the required interface return a specific error. Windows selectText remains unavailable.'],
     ];
