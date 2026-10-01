@@ -14,49 +14,32 @@ on:
       only:
         type: string
         required: false
+    outputs:
+      versions:
+        description: Versions installed in the guest (chatgpt-bin, hyprland, @oai/cua, @oai/sky), as JSON
+        value: ${{ jobs.vm.outputs.versions }}
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   vm:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
+    outputs:
+      versions: ${{ steps.versions.outputs.json }}
     steps:
       - uses: actions/checkout@v7
-      - name: Enable KVM and install QEMU
-        id: setup
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-          sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils xorriso >/dev/null
-          echo "sha=$(curl -fsSL --retry 3 https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-      # The provisioned disk (tests/e2e/vm/run.sh rebuilds it daily); the base
-      # image is needed only to rebuild it. Saved even when tests fail.
-      - uses: actions/cache/restore@v6
-        id: ready
-        with:
-          path: ~/.cache/codex-hyprland-e2e/ready
-          key: e2e-ready-${{ steps.setup.outputs.day }}-${{ hashFiles('tests/e2e/vm/provision.sh', 'tests/e2e/vm/hyprland.lua', 'tests/e2e/vm/openai-chatgpt.gpg') }}-${{ steps.setup.outputs.sha }}
-      - uses: actions/cache/restore@v6
-        id: base
-        if: steps.ready.outputs.cache-hit != 'true'
-        with:
-          path: ~/.cache/codex-hyprland-e2e/base
-          key: e2e-base-${{ steps.setup.outputs.sha }}
+      - uses: ./.github/actions/e2e-vm-host
       - run: ./test
         env:
           E2E_ONLY: ${{ inputs.only }}
-      - uses: actions/cache/save@v6
-        if: always() && steps.ready.outputs.cache-hit != 'true'
+      - uses: ./.github/actions/e2e-vm-host
+        if: always()
         with:
-          path: ~/.cache/codex-hyprland-e2e/ready
-          key: ${{ steps.ready.outputs.cache-primary-key }}
-      - uses: actions/cache/save@v6
-        if: always() && steps.ready.outputs.cache-hit != 'true' && steps.base.outputs.cache-hit != 'true'
-        with:
-          path: ~/.cache/codex-hyprland-e2e/base
-          key: e2e-base-${{ steps.setup.outputs.sha }}
+          save: 'true'
+      - id: versions
+        if: always()
+        run: echo "json=$(cat e2e-artifacts/versions.json 2>/dev/null || echo '{}')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

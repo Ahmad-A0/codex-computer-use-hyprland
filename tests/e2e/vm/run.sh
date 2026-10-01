@@ -7,8 +7,10 @@
 #                    the cloud image, ready/ the provisioned disk, rebuilt daily
 #                    or when provisioning changes. Tests run on a throwaway overlay.
 #   E2E_REPROVISION  set to rebuild the provisioned disk
-#   E2E_ARTIFACTS    results, logs and screenshot (default ./e2e-artifacts)
+#   E2E_ARTIFACTS    results, logs, versions.json, screenshot (default ./e2e-artifacts)
 #   E2E_ONLY         passed through to the suite
+#   E2E_TIMEOUT      suite time limit in seconds (default 1200)
+# --cache-keys prints ready=<provisioned disk key> and base=<cloud image key>.
 set -euo pipefail
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -17,6 +19,34 @@ artifacts=${E2E_ARTIFACTS:-$PWD/e2e-artifacts}
 image_url=https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
 user=tester
 repo=codex-computer-use-hyprland
+
+# Latest chatgpt-bin and hyprland, so a new upstream release reprovisions.
+upstream() {
+  if [ -x "$root/scripts/release/upstream.sh" ]; then "$root/scripts/release/upstream.sh"; return; fi
+  python3 - <<'EOF'
+import io, json, tarfile, urllib.request
+def get(url):
+    return urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'codex-hyprland-e2e'}), timeout=30).read()
+versions = {}
+with tarfile.open(fileobj=io.BytesIO(get('https://persistent.oaistatic.com/codex-app-prod/linux/arch/x86_64/openai-chatgpt.db'))) as db:
+    for member in db.getmembers():
+        if member.name.endswith('/desc'):
+            lines = db.extractfile(member).read().decode().split('\n')
+            entry = {lines[i]: lines[i + 1] for i in range(len(lines) - 1) if lines[i].startswith('%')}
+            if entry.get('%NAME%') == 'chatgpt-bin':
+                versions['chatgpt-bin'] = entry['%VERSION%']
+arch = json.loads(get('https://archlinux.org/packages/extra/x86_64/hyprland/json/'))
+versions['hyprland'] = f"{arch['pkgver']}-{arch['pkgrel']}"
+print(json.dumps(versions, sort_keys=True))
+EOF
+}
+sha=$(curl -fsSL --retry 3 "$image_url.SHA256" | cut -d ' ' -f 1)
+key=$(date -u +%F)-$(cat "$here/provision.sh" "$here/hyprland.lua" "$here/openai-chatgpt.gpg" <(echo "$sha") <(upstream) |
+  sha256sum | cut -c 1-16)
+if [ "${1:-}" = --cache-keys ]; then
+  printf 'ready=%s\nbase=%s\n' "$key" "$sha"
+  exit
+fi
 mkdir -p "$cache/base" "$cache/ready" "$artifacts"
 artifacts=$(cd "$artifacts" && pwd); cache=$(cd "$cache" && pwd)
 work=$(mktemp -d)
@@ -24,8 +54,6 @@ work=$(mktemp -d)
 started=$(date +%s)
 mark() { echo "$1 $(( $(date +%s) - started ))s" | tee -a "$artifacts/timings.txt"; started=$(date +%s); }
 
-sha=$(curl -fsSL --retry 3 "$image_url.SHA256" | cut -d ' ' -f 1)
-key=$(date -u +%F)-$(cat "$here/provision.sh" "$here/hyprland.lua" "$here/openai-chatgpt.gpg" <(echo "$sha") | sha256sum | cut -c 1-16)
 ready="$cache/ready/provisioned-$key.qcow2"
 
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"
@@ -121,9 +149,20 @@ boot "$ready" ""
 testing=1
 mark boot
 for _ in $(seq 60); do vm 'test -s ~/.session-env' && break; sleep 2; done
-session 'hyprctl monitors -j | python3 -c "import json,sys; sys.exit(not json.load(sys.stdin))" || hyprctl output create headless'
-session 'hyprctl instances -j; hyprctl monitors'
+# virtio-gpu's output can appear shortly after the compositor starts.
+monitors='hyprctl monitors -j | python3 -c "import json,sys; sys.exit(not json.load(sys.stdin))"'
+for _ in $(seq 30); do session "$monitors" && break; sleep 2; done
+session "$monitors; hyprctl instances -j; hyprctl monitors"
 mark session
+vm 'python3 - <<EOF
+import json, subprocess
+versions = dict(line.split() for line in subprocess.check_output(["pacman", "-Q", "chatgpt-bin", "hyprland"], text=True).splitlines())
+for name in ("cua", "sky"):
+    with open(f"/usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/{name}/package.json") as file:
+        versions[f"@oai/{name}"] = json.load(file)["version"]
+print(json.dumps(versions))
+EOF' > "$artifacts/versions.json"
+cat "$artifacts/versions.json"
 
 # The checkout as it is, without ignored build products.
 if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
@@ -136,7 +175,7 @@ mark install
 session ./doctor 2>&1 | tee "$artifacts/doctor.log"
 mark doctor
 set +e
-session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' ./test --host" 2>&1 | tee "$artifacts/suite.log"
+session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' timeout -k 10 ${E2E_TIMEOUT:-1200} ./test --host" 2>&1 | tee "$artifacts/suite.log"
 suite=${PIPESTATUS[0]}
 set -e
 mark suite

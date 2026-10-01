@@ -1,0 +1,55 @@
+name: e2e VM host
+description: >-
+  Prepare a runner for ./test (KVM, QEMU, cached VM images); ./test can then
+  run any number of times in the job. Use again with save "true" after the
+  tests to cache images that ./test built.
+inputs:
+  save:
+    description: Save built images instead of preparing the host
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - if: inputs.save != 'true'
+      id: keys
+      shell: bash
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules >/dev/null
+        sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+        sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils xorriso >/dev/null
+        tests/e2e/vm/run.sh --cache-keys | tee -a "$GITHUB_OUTPUT"
+    # The provisioned disk is rebuilt daily and for new upstream releases; the
+    # base image is only needed to rebuild it.
+    - if: inputs.save != 'true'
+      id: ready
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/codex-hyprland-e2e/ready
+        key: e2e-ready-${{ steps.keys.outputs.ready }}
+    - if: inputs.save != 'true' && steps.ready.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/codex-hyprland-e2e/base
+        key: e2e-base-${{ steps.keys.outputs.base }}
+    # Keys of the images present, which ./test names after their contents.
+    - if: inputs.save == 'true'
+      id: built
+      shell: bash
+      run: |
+        c=~/.cache/codex-hyprland-e2e
+        f=$(ls "$c"/ready/provisioned-*.qcow2 2>/dev/null || true); f=${f##*/provisioned-}
+        [ -z "$f" ] || echo "ready=${f%.qcow2}" >> "$GITHUB_OUTPUT"
+        f=$(ls "$c"/base/arch-cloudimg-*.qcow2 2>/dev/null || true); f=${f##*/arch-cloudimg-}
+        [ -z "$f" ] || echo "base=${f%.qcow2}" >> "$GITHUB_OUTPUT"
+    - if: inputs.save == 'true' && steps.built.outputs.ready != ''
+      uses: actions/cache/save@v6
+      continue-on-error: true
+      with:
+        path: ~/.cache/codex-hyprland-e2e/ready
+        key: e2e-ready-${{ steps.built.outputs.ready }}
+    - if: inputs.save == 'true' && steps.built.outputs.base != ''
+      uses: actions/cache/save@v6
+      continue-on-error: true
+      with:
+        path: ~/.cache/codex-hyprland-e2e/base
+        key: e2e-base-${{ steps.built.outputs.base }}
