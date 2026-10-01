@@ -346,7 +346,7 @@ class Accessibility:
             raise ValueError("Ambiguous AT-SPI window; cannot safely choose a tree")
         return None
 
-    def snapshot(self, client, query=""):
+    def snapshot(self, client, query="", settle=False, menu=False):
         wid = client["address"]
         self.elements.pop(wid, None)
         root = self.root(client)
@@ -360,6 +360,20 @@ class Accessibility:
         self.watched.add(client["pid"])
         self.pump()
         popups = self.popups(client, root)
+        if settle:
+            # Toolkits announce a menu's accessible objects shortly after the
+            # compositor maps it. After an action, wait (bounded) until every
+            # popup the compositor shows on this window is in the tree.
+            # When the action usually opens a menu (menu=True), also wait for
+            # the compositor to map one: under load that can take a while.
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                mapped = len(self.popup_geometry(client))
+                if len(popups) >= mapped and (mapped or not menu):
+                    break
+                time.sleep(.05)
+                self.pump()
+                popups = self.popups(client, root)
         elements, seen, offsets = {}, set(), {}
         deadline = time.monotonic() + 8
         limit = 1500

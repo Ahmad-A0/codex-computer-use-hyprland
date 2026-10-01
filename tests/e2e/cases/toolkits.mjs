@@ -22,6 +22,16 @@ if (terminal) {
   'StartupWMClass=codex-e2e-terminal\nCategories=System;TerminalEmulator;\n');
 }
 
+const pageWindow = () => clients().find((c) => c.title.startsWith('Codex E2E Page'));
+/** Open the test page in Chromium and bind it, unless an earlier test did. */
+async function ensurePage() {
+  const bound = await js('await nodeRepl.write(String(typeof globalThis.page !== "undefined"));');
+  if (bound.trim().endsWith('true') && pageWindow()) return;
+  await js(`await cua.computer.launch_app({ app: "codex-e2e-browser.desktop" });`);
+  await until(() => Boolean(pageWindow()), 'browser window', 30000);
+  await js(`globalThis.page = await cua.getApp({ windowId: ${parseInt(pageWindow().address, 16)} });`);
+}
+
 export default function (test) {
   test('Qt: accessibility tree, setValue, click', async () => {
     await bind('qt', 'codex-e2e-qt.desktop', { timeout: 30000 });
@@ -81,11 +91,11 @@ export default function (test) {
   test('Chromium: page context menu is observable and usable', async () => {
     // Chromium's context menu is a separate accessible frame of the app; it
     // belongs to the page window through the compositor's popup of that size.
-    const window = () => clients().find((c) => c.title.startsWith('Codex E2E Page'));
-    expect(Boolean(window()) && await js('await nodeRepl.write(String(globalThis.page !== undefined));')
-      .then((t) => t.trim().endsWith('true')), 'needs the Chromium test above');
-    // Chromium's showContextMenu action leaves focus where it was, so focus the input first.
-    await js(`await page.click(await e2eFind(page, "Page input", "entry"));`);
+    const window = pageWindow;
+    await ensurePage();
+    // Chromium's showContextMenu action leaves focus where it was, so focus the
+    // input first; it needs text, or "Select all" is (rightly) disabled.
+    await js(`await page.click(await e2eFind(page, "Page input", "entry")); await page.typeText("some text");`);
     await contextMenu('page', 'Page input', 'entry', 'Select all');
     // Typing replaces the selection that the menu made.
     await js(`await page.typeText("menu typed"); await page.getAXState({ emit: false });`);

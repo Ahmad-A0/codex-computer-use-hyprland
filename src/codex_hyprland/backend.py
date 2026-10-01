@@ -79,6 +79,7 @@ class Backend:
         self.pointer_position = None
         self.capture_origins = {}
         self.observation_deadlines = {}
+        self.menu_actions = set()  # windows whose last action usually opens a menu
         # Sky key_down holds by target (window ID, or None for the desktop):
         # {"client": client, "chords": {identity: key names}}.
         self.holds = {}
@@ -90,6 +91,15 @@ class Backend:
         window = params.get('window')
         key = window.get('id') if isinstance(window, dict) else None
         self.observation_deadlines[key] = time.monotonic() + .25
+        # A right-click, a menu action or the Menu key usually opens a popup;
+        # the next observation then waits for it to map and be announced.
+        action = str(params.get('action', '')).casefold()
+        keys = str(params.get('key', '')).casefold().replace(' ', '')
+        if (params.get('mouse_button') in ('right', 'r') or 'menu' in action
+                or keys in ('menu', 'shift+f10')):
+            self.menu_actions.add(key)
+        else:
+            self.menu_actions.discard(key)
 
     def wait_for_observation(self, client=None):
         key = int(client['address'], 16) if client else None
@@ -101,6 +111,10 @@ class Backend:
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(remaining)
+        return deadline > 0  # whether an action preceded this observation
+
+    def expects_menu(self, client):
+        return bool(self.menu_actions & {int(client['address'], 16), None})
 
     def close(self):
         # Leave nothing held when the helper exits; handles become invalid.
@@ -439,10 +453,12 @@ class Backend:
         if type(include) is not bool:
             raise ValueError("include_screenshot must be boolean")
         query = text(p.get("query", ""), "query")
-        self.wait_for_observation(c)
-        screenshots = self.screenshot(c) if include else []
+        acted = self.wait_for_observation(c)
         c = self.target(p["window"])
-        tree, source = self.ax.snapshot(c, query)
+        # Like macOS, an observation after an action waits for menus it opened.
+        tree, source = self.ax.snapshot(c, query, settle=acted, menu=acted and self.expects_menu(c))
+        self.menu_actions.discard(int(c['address'], 16))
+        screenshots = self.screenshot(c) if include else []
         active = (self.hypr.query("activewindow") or {}).get("address")
         return {"window": self.window(c, active), "ax_tree": tree,
                 "ax_tree_source": source, "screenshots": screenshots}

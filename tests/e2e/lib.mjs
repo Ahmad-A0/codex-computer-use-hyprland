@@ -172,11 +172,12 @@ export async function contextMenu(app, target, role, item, { reopen = false } = 
       }
     } catch (error) {
       await ${app}.pressKey("Escape");
-      throw error;
+      result.error = String(error && error.message || error);
     }
     await nodeRepl.write(JSON.stringify(result));`);
   const result = JSON.parse(text.slice(text.indexOf('{"opened"')));
   writeFileSync(join(out, `menu-${app}.json`), JSON.stringify(result, null, 2)); // evidence for failures
+  if (result.error) throw new Error(`${result.error}\nfirst observation after the right-click:\n${String(result.opened).slice(0, 1500)}`);
   const added = (diff) => diff.split('\n').some((l) => l.startsWith('+\t') && l.includes(item));
   const removed = (diff) => diff.includes('Removed element IDs') && !diff.includes(item);
   expect(added(result.opened), `menu items were not added to the tree:\n${result.opened}`);
