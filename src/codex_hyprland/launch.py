@@ -42,7 +42,7 @@ def register(pid):
 
 
 def chromium_based(program, depth=0):
-    """Whether a program is Chromium or Electron, following wrapper scripts.
+    """Whether a program is Chromium or Electron, following wrapper scripts and launchers.
     Their bundles always ship icudtl.dat next to the real binary."""
     found = shutil.which(program)
     if not found or depth > 3:
@@ -52,10 +52,12 @@ def chromium_based(program, depth=0):
     if any((d / 'icudtl.dat').is_file() for d in (path.parent, path.parent.parent)):
         return True
     try:
-        head = path.read_bytes()[:65536]
+        with path.open('rb') as file:
+            head = file.read(262144)
     except OSError:
         return False
-    if not head.startswith(b'#!'):
+    # Wrapper scripts, or small compiled launchers such as Arch's chromium-launcher.
+    if not head.startswith(b'#!') and path.stat().st_size > len(head):
         return False
     targets = re.findall(rb'(/[\w.+@-]+(?:/[\w.+@-]+)+)', head)
     return any(chromium_based(target.decode(), depth + 1) for target in dict.fromkeys(targets)
