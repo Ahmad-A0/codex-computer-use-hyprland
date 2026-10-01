@@ -56,7 +56,7 @@ qemu-system-x86_64 -accel kvm -cpu host -smp "${E2E_VM_CPUS:-2}" -m "${E2E_VM_ME
   -drive "if=virtio,file=$work/disk.qcow2,discard=unmap" \
   -drive "if=virtio,file=$work/seed.iso,format=raw,readonly=on" \
   -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
-  -vga none -device virtio-gpu-pci -display none -monitor none \
+  -vga none -device virtio-gpu-pci,xres=1920,yres=1080 -display none -monitor none \
   -serial "file:$artifacts/console.log" -daemonize -pidfile "$work/qemu.pid"
 
 vm() {
