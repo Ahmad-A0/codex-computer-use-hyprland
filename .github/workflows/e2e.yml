@@ -2,7 +2,7 @@ name: e2e
 # Runs ./test: a disposable Arch Linux + Hyprland VM, installed as a user would.
 on:
   push:
-    branches: [main]
+    branches: [main, e2e-vm]  # TEMP
   pull_request:
   workflow_dispatch:
     inputs:
@@ -30,13 +30,20 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils xorriso >/dev/null
           echo "sha=$(curl -fsSL --retry 3 https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
         id: setup
-      - uses: actions/cache@v6
+      # Restore and save separately: the image is worth keeping when tests fail.
+      - uses: actions/cache/restore@v6
+        id: cache
         with:
           path: ~/.cache/codex-hyprland-e2e
           key: arch-cloudimg-${{ steps.setup.outputs.sha }}
       - run: ./test
         env:
           E2E_ONLY: ${{ inputs.only }}
+      - uses: actions/cache/save@v6
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/codex-hyprland-e2e
+          key: arch-cloudimg-${{ steps.setup.outputs.sha }}
       - uses: actions/upload-artifact@v7
         if: always()
         with:
