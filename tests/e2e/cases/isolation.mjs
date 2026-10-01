@@ -25,7 +25,8 @@ export function setup(test) {
     launchDirect(`${shared} ${statePath('codex-e2e-shared')} codex-e2e-shared "Codex E2E Decoy"`, { silent: !strict });
     await until(() => Boolean(client('codex-e2e-shared')), 'decoy window', 15000);
     userWindows.add(client('codex-e2e-shared').address);
-    if (strict) execFileSync('sh', ['-c', `printf %s ${sentinel} | wl-copy`]);
+    // wl-copy's background owner inherits stdio; capturing it would never end.
+    if (strict) execFileSync('sh', ['-c', `printf %s ${sentinel} | wl-copy`], { stdio: 'ignore' });
   }, { setup: true });
 }
 
