@@ -12,6 +12,7 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -23,6 +24,7 @@ static std::string str(json_object* j,const char* k){return json_object_get_stri
 static void settleEvents(){std::this_thread::sleep_for(std::chrono::milliseconds(12));}
 struct Connection {Display* d;~Connection(){if(d)XCloseDisplay(d);}};
 #include "xpopups.hpp"
+#include "xkeys.hpp"
 int main(int argc,char** argv){
  try {
   need(argc==2,"Expected JSON request");
@@ -66,16 +68,20 @@ int main(int argc,char** argv){
    XCloseDevice(d,keyboardDevice);XCloseDevice(d,pointerDevice);std::cout<<"{\"ok\":true}\n";return 0;
   }
   XISetFocus(d,masterKeyboard,target,CurrentTime);XSync(d,False);settleEvents();
+  auto down=pressed(keyboardDevice,KeyClass);
+  // Keycodes come from XKeys, which binds keysyms the seat's keymap lacks for
+  // this run (restored when it is destroyed, also on errors).
+  std::optional<XKeys> keymap;
+  auto keys=[&]()->XKeys&{if(!keymap)keymap.emplace(d,slaveKeyboard,target,down);return *keymap;};
   // The provider sends this target's held keys; the private keyboard holds
   // exactly those (in order), so another target's holds never leak here.
   std::vector<unsigned> held;
   if(json_object* names=nullptr;json_object_object_get_ex(j.get(),"held",&names)){
    need(json_object_is_type(names,json_type_array)&&json_object_array_length(names)<=16,"Expected at most 16 held keys");
    for(size_t i=0;i<json_object_array_length(names);++i){auto sym=XStringToKeysym(json_object_get_string(json_object_array_get_idx(names,i)));need(sym!=NoSymbol,"Unknown X11 key");
-    int lo,hi;XDisplayKeycodes(d,&lo,&hi);unsigned code=0;for(int c=lo;c<=hi && !code;++c)for(int level=0;level<2;++level)if(XkbKeycodeToKeysym(d,c,0,level)==sym){code=c;break;}
-    need(code,"X11 key is not mapped");if(std::find(held.begin(),held.end(),code)==held.end())held.push_back(code);}
+    unsigned code=keys().find(sym).first;if(std::find(held.begin(),held.end(),code)==held.end())held.push_back(code);}
   }
-  {auto down=pressed(keyboardDevice,KeyClass);bool changed=false;
+  {bool changed=false;
    for(auto it=down.rbegin();it!=down.rend();++it)if(std::find(held.begin(),held.end(),*it)==held.end()){XTestFakeDeviceKeyEvent(d,keyboardDevice,*it,False,nullptr,0,CurrentTime);changed=true;}
    for(auto code:held)if(std::find(down.begin(),down.end(),code)==down.end()){XTestFakeDeviceKeyEvent(d,keyboardDevice,code,True,nullptr,0,CurrentTime);changed=true;}
    if(changed){XSync(d,False);settleEvents();}}
@@ -88,25 +94,26 @@ int main(int argc,char** argv){
   auto key=[&](unsigned code,unsigned state){
    std::vector<unsigned> modifiers;
    for(auto [mask,symbol]:{std::pair{ShiftMask,XK_Shift_L},std::pair{ControlMask,XK_Control_L},std::pair{Mod1Mask,XK_Alt_L},std::pair{Mod4Mask,XK_Super_L},std::pair{Mod5Mask,XK_ISO_Level3_Shift}})
-    if(state&mask){auto c=XKeysymToKeycode(d,symbol);if(c && !isHeld(c)){modifiers.push_back(c);XTestFakeDeviceKeyEvent(d,keyboardDevice,c,True,nullptr,0,CurrentTime);}}
+    if(state&mask){auto c=keys().modifier(symbol,mask);if(!isHeld(c)){modifiers.push_back(c);XTestFakeDeviceKeyEvent(d,keyboardDevice,c,True,nullptr,0,CurrentTime);}}
    XTestFakeDeviceKeyEvent(d,keyboardDevice,code,True,nullptr,0,CurrentTime);XTestFakeDeviceKeyEvent(d,keyboardDevice,code,False,nullptr,0,CurrentTime);
    for(auto it=modifiers.rbegin();it!=modifiers.rend();++it)XTestFakeDeviceKeyEvent(d,keyboardDevice,*it,False,nullptr,0,CurrentTime);
    XSync(d,False);settleEvents();
   };
-  auto find=[&](KeySym sym){int lo,hi;XDisplayKeycodes(d,&lo,&hi);for(int code=lo;code<=hi;++code)for(int level=0;level<2;++level)if(XkbKeycodeToKeysym(d,code,0,level)==sym)return std::pair<unsigned,unsigned>{code,level?ShiftMask:0};return std::pair<unsigned,unsigned>{0,0};};
   if(op=="ax_probe") {focusEvent(target,FocusIn);XSync(d,False);}
   else if(op=="hold") {}
   else if(op=="drag_motion") {double x=num(j.get(),"x"),y=num(j.get(),"y");need(std::isfinite(x)&&std::isfinite(y),"Invalid X11 point");pointer(MotionNotify,x,y,0,0);}
   else if(op=="key") {
-   auto sym=XStringToKeysym(str(j.get(),"key").c_str());need(sym!=NoSymbol,"Unknown X11 key");auto [code,mods]=find(sym);need(code,"X11 key is not mapped");
+   auto sym=XStringToKeysym(str(j.get(),"key").c_str());need(sym!=NoSymbol,"Unknown X11 key");auto [code,mods]=keys().find(sym);
    auto a=field(j.get(),"modifiers");for(size_t i=0;i<json_object_array_length(a);++i){std::string m=json_object_get_string(json_object_array_get_idx(a,i));mods|=m=="Shift"?ShiftMask:m=="Control"?ControlMask:m=="Mod1"?Mod1Mask:m=="Mod4"?Mod4Mask:m=="Mod5"?Mod5Mask:0;}
    key(code,mods);
   } else if(op=="text") {
    auto text=str(j.get(),"text");std::vector<unsigned> chars;
    for(size_t i=0;i<text.size();){unsigned char b=text[i++];unsigned cp=b;int n=0;if(b>=0xf0){cp=b&7;n=3;}else if(b>=0xe0){cp=b&15;n=2;}else if(b>=0xc0){cp=b&31;n=1;}for(int k=0;k<n;++k){need(i<text.size(),"Invalid UTF-8");cp=(cp<<6)|(text[i++]&63);}chars.push_back(cp);}
-   std::vector<std::pair<unsigned,unsigned>> strokes;
-   for(auto cp:chars){need(cp<128,"Unicode X11 typing requires the accessibility route");KeySym sym=cp=='\n'||cp=='\r'?XK_Return:cp=='\t'?XK_Tab:cp;auto stroke=find(sym);need(stroke.first,"X11 text key unavailable");strokes.push_back(stroke);}
-   for(auto [code,mods]:strokes)key(code,mods);
+   std::vector<KeySym> syms;
+   for(auto cp:chars){need(cp<128,"Unicode X11 typing requires the accessibility route");need(cp>=0x20||cp=='\n'||cp=='\r'||cp=='\t',"X11 text key unavailable");
+    KeySym sym=cp=='\n'||cp=='\r'?XK_Return:cp=='\t'?XK_Tab:cp==0x7f?XK_Delete:cp;keys().find(sym);syms.push_back(sym);}
+   // Looked up again per key: XWayland may switch keymaps while typing.
+   for(auto sym:syms){auto [code,mods]=keys().find(sym);key(code,mods);}
   } else {
    double x=num(j.get(),"x"),y=num(j.get(),"y");bool valid=x>=0&&y>=0&&x<num(j.get(),"width")&&y<num(j.get(),"height");
    if(!valid){auto [px,py]=point(x,y);for(auto p:ownedPopups(d,target))if(px>=p.x&&py>=p.y&&px<p.x+p.width&&py<p.y+p.height)valid=true;}
@@ -147,6 +154,7 @@ int main(int argc,char** argv){
    else if(op=="scroll"){for(auto [axis,positive,negative]:{std::tuple{"dx",7,6},std::tuple{"dy",5,4}}){auto distance=num(j.get(),axis);unsigned button=distance>0?positive:negative;for(int i=0;i<std::ceil(std::abs(distance)/40.);++i){pointer(ButtonPress,x,y,button,0);pointer(ButtonRelease,x,y,button,0);}}}
    else if(op!="point")throw std::runtime_error("Unknown X11 operation");
   }
+  if(keymap)keymap->restore();
   XCloseDevice(d,keyboardDevice);XCloseDevice(d,pointerDevice);XSync(d,False);std::cout<<"{\"ok\":true}\n";return 0;
  }catch(const std::exception& e){auto* j=json_object_new_object();json_object_object_add(j,"ok",json_object_new_boolean(false));json_object_object_add(j,"error",json_object_new_string(e.what()));std::cout<<json_object_to_json_string_ext(j,JSON_C_TO_STRING_PLAIN)<<'\n';json_object_put(j);return 1;}
 }
