@@ -57,7 +57,7 @@ jobs:
           claude_args: --max-turns 400 --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
           prompt: |
             You maintain this repository: a Hyprland provider for OpenAI's Codex computer-use
-            interface. Read AGENTS.md and README.md first and follow them.
+            interface. Read AGENTS.md, README.md and docs/DESIGN.md first and follow them.
 
             Issue #${{ inputs.issue }} in ${{ github.repository }} reports that the end-to-end
             suite failed after an upstream update (OpenAI's chatgpt-bin package, which ships the

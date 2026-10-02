@@ -70,5 +70,5 @@ package() {
   sed "s|@ROOT@|$root|" systemd/codex-hyprland-prebuild.service |
     install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/codex-hyprland-prebuild.service"
 
-  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md docs/DESIGN.md
 }
