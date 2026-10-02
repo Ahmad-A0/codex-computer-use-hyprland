@@ -257,6 +257,21 @@ newer paste action's internal trigger; Linux shortcut selection is our platform
 implementation of the documented pasteboard/clipboard-preservation contract.
 
 
+Wayland keys do not depend on the seat's current keymap either. The seat's map
+is that of the last keyboard used, and after a virtual keyboard such as `wtype`
+it holds only that tool's keys. The module sends the target client a map that
+has every key (the seat's own when it does and no key is held, else a full US
+map with any extra Unicode characters), then the keys. GTK 3 reads a batch of
+protocol events before handling them and resolves key bindings (Ctrl+A, End,
+Escape on a menu) by keycode against the map current when it handles each key,
+so that map stays until the client answers an `xdg_wm_base` ping sent after the
+keys (observed through a protocol logger, so Hyprland's own ping handling is
+untouched). Only then does the client get the seat's current map back, with its
+modifiers; a later batch reuses the map still installed when it can, and a
+client that does not answer gets the seat's map after five seconds. The user's
+own keys always use the seat's map: a physical key for that client restores it
+first. The seat and the physical keyboard are never changed.
+
 X11 keys do not depend on the seat's current keymap. XWayland's core keymap is
 that of the last Wayland keyboard used; after a virtual keyboard such as `wtype`
 it holds only that tool's keys. A key or character the core map lacks is bound,

@@ -37,6 +37,8 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <map>
+#include <optional>
+#include <cstring>
 #include <set>
 #include <fstream>
 #include <ranges>
@@ -52,6 +54,7 @@ double num(json_object* j,const char* key) { auto v=field(j,key); require(json_o
 #include "clipboard.hpp"
 #include "focus_restore.hpp"
 #include "held.hpp"
+#include "keymap.hpp"
 #include "popups.hpp"
 #include "activation.hpp"
 #include "capture.hpp"
@@ -72,17 +75,17 @@ struct TextKeyboard final : IKeyboard {
     }
 };
 struct Stroke { uint32_t code, mods; };
-Stroke lookup(xkb_keymap* map,xkb_keysym_t sym) {
+std::optional<Stroke> lookup(xkb_keymap* map,xkb_keysym_t sym) {
     for (auto code=xkb_keymap_min_keycode(map);code<=xkb_keymap_max_keycode(map);++code) {
         for (xkb_level_index_t level=0;level<xkb_keymap_num_levels_for_key(map,code,0);++level) {
             const xkb_keysym_t* syms=nullptr;
             if(xkb_keymap_key_get_syms_by_level(map,code,0,level,&syms)!=1 || (syms[0]!=sym && (!xkb_keysym_to_utf32(sym) || xkb_keysym_to_utf32(syms[0])!=xkb_keysym_to_utf32(sym)))) continue;
             xkb_mod_mask_t masks[16];
             auto count=xkb_keymap_key_get_mods_for_level(map,code,0,level,masks,16);
-            if(count) return {code-8,masks[0]};
+            if(count) return Stroke{code-8,masks[0]};
         }
     }
-    throw std::runtime_error("Key is absent from target keymap: " + std::to_string(sym));
+    return std::nullopt;
 }
 std::vector<uint32_t> decode(const std::string& text) {
     std::vector<uint32_t> result;
@@ -106,65 +109,86 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
     std::vector<SP<CWLKeyboardResource>> resources;
     for(auto& weak:seat->m_keyboards) if(auto k=weak.lock()) resources.push_back(k);
     require(!resources.empty(),"Application has no Wayland keyboard resource");
-    SP<IKeyboard> map=original;
-    std::vector<Stroke> strokes;
     // Held keys stay down for this window: re-entry reports them, and every
     // stroke carries their modifiers. "hold" replaces the held set in order.
     auto* held=Held::find(window);
     std::vector<uint32_t> before=held?held->codes:std::vector<uint32_t>{},after=before;
+    std::vector<xkb_keysym_t> holding,typing;
+    std::vector<std::string> modifiers;
+    std::vector<uint32_t> extras;
     if(op=="hold") {
         auto keys=field(j,"keys");require(json_object_is_type(keys,json_type_array) && json_object_array_length(keys)<=16,"Expected at most 16 held keys");
-        after.clear();
         for(size_t i=0;i<json_object_array_length(keys);++i) {
             auto* name=json_object_get_string(json_object_array_get_idx(keys,i));require(name,"Expected key name");
             auto sym=xkb_keysym_from_name(name,XKB_KEYSYM_CASE_INSENSITIVE);require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
-            auto code=lookup(original->m_xkbKeymap,sym).code;
-            if(std::find(after.begin(),after.end(),code)==after.end())after.push_back(code);
+            holding.push_back(sym);
         }
-    }
-    const auto heldMods=Held::mask(original->m_xkbKeymap,after);
-    if(op=="text") {
+    } else if(op=="text") {
         auto chars=decode(str(j,"text")); require(chars.size()<=2048,"Text batch too large");
-        std::vector<uint32_t> extras;
-        for(auto cp:chars) if(cp>126 && std::find(extras.begin(),extras.end(),cp)==extras.end()) extras.push_back(cp);
-        require(extras.size()<=48,"Too many distinct Unicode scalars in one batch");
-        auto base=makeShared<TextKeyboard>("");
-        std::ostringstream symbols;
-        for(size_t i=0;i<extras.size();++i) symbols<<"replace key <"<<xkb_keymap_key_get_name(base->m_xkbKeymap,200+i)<<"> { [ U"<<std::hex<<std::setw(4)<<std::setfill('0')<<extras[i]<<std::dec<<" ] }; ";
-        map=makeShared<TextKeyboard>(symbols.str());
         for(auto cp:chars) {
             auto sym=cp=='\n'||cp=='\r'?XKB_KEY_Return:cp=='\t'?XKB_KEY_Tab:xkb_utf32_to_keysym(cp);
             require(sym!=XKB_KEY_NoSymbol,"Unsupported text character");
-            strokes.push_back(lookup(map->m_xkbKeymap,sym));
+            typing.push_back(sym);
+            if(cp>126 && std::find(extras.begin(),extras.end(),cp)==extras.end()) extras.push_back(cp);
         }
+        require(extras.size()<=48,"Too many distinct Unicode scalars in one batch");
     } else if(op=="key") {
         auto sym=xkb_keysym_from_name(str(j,"key").c_str(),XKB_KEYSYM_CASE_INSENSITIVE);
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
-        // The seat's map is that of the last keyboard used, which may be a
-        // virtual keyboard (wtype) that maps only a few keys; then use a full map.
-        Stroke stroke{};
-        try{stroke=lookup(map->m_xkbKeymap,sym);}catch(const std::runtime_error&){map=makeShared<TextKeyboard>("");stroke=lookup(map->m_xkbKeymap,sym);}
+        typing.push_back(sym);
         auto mods=field(j,"modifiers"); require(json_object_is_type(mods,json_type_array),"Expected modifiers array");
         for(size_t i=0;i<json_object_array_length(mods);++i) {
-            std::string name=json_object_get_string(json_object_array_get_idx(mods,i));
-            auto index=xkb_keymap_mod_get_index(map->m_xkbKeymap,name.c_str());
-            require(index!=XKB_MOD_INVALID && index<32,"Unknown keyboard modifier"); stroke.mods|=1u<<index;
+            auto* name=json_object_get_string(json_object_array_get_idx(mods,i));require(name,"Expected modifier name");
+            modifiers.push_back(name);
         }
-        strokes.push_back(stroke);
     }
+    const bool keys=op=="hold" || !typing.empty();
+    // Keys are encoded with the map the client still has from earlier keys,
+    // else the seat's when it has every key and none is held (the seat's map
+    // is that of the last keyboard used, which may be a virtual keyboard such
+    // as wtype mapping only a few keys), else a full map. Held key codes stay
+    // valid in every full map.
+    SP<IKeyboard> map;
+    std::vector<Stroke> strokes;
+    auto encode=[&](const SP<IKeyboard>& candidate) {
+        std::vector<Stroke> encoded;std::vector<uint32_t> down=op=="hold"?std::vector<uint32_t>{}:before;
+        for(auto sym:holding){auto s=lookup(candidate->m_xkbKeymap,sym);if(!s)return false;if(std::find(down.begin(),down.end(),s->code)==down.end())down.push_back(s->code);}
+        for(auto sym:typing){auto s=lookup(candidate->m_xkbKeymap,sym);if(!s)return false;encoded.push_back(*s);}
+        for(auto& name:modifiers){auto index=xkb_keymap_mod_get_index(candidate->m_xkbKeymap,name.c_str());if(index==XKB_MOD_INVALID || index>=32)return false;encoded[0].mods|=1u<<index;}
+        map=candidate;strokes=std::move(encoded);after=std::move(down);return true;
+    };
+    auto installed=Keymap::installed(seat);
+    if(!keys)map=installed?installed:original;
+    else if(!(installed && encode(installed)) && !(op!="text" && before.empty() && holding.empty() && encode(original))) {
+        std::ostringstream symbols;
+        if(!extras.empty()) {
+            auto base=makeShared<TextKeyboard>("");
+            for(size_t i=0;i<extras.size();++i) symbols<<"replace key <"<<xkb_keymap_key_get_name(base->m_xkbKeymap,200+i)<<"> { [ U"<<std::hex<<std::setw(4)<<std::setfill('0')<<extras[i]<<std::dec<<" ] }; ";
+        }
+        auto full=makeShared<TextKeyboard>(symbols.str());
+        if(!encode(full)) {
+            for(auto& name:modifiers)require(xkb_keymap_mod_get_index(full->m_xkbKeymap,name.c_str())<32,"Unknown keyboard modifier");
+            throw std::runtime_error("Key is absent from target keymap");
+        }
+    }
+    // Held key codes come from a full map (the seat's is used only without
+    // held keys), and so do their modifiers.
+    const auto heldMods=after.empty()?0:Held::mask((map==original?makeShared<TextKeyboard>(""):map)->m_xkbKeymap,after);
     // All fallible preparation precedes delivery. These calls only enqueue protocol events.
     auto entered=Held::array(before);
     for(auto& k:resources) {
         k->sendKeymap(map); if(op=="probe_clear")k->sendLeave();else k->sendEnter(target,&entered);
         if(op=="hold") {
             std::vector<uint32_t> down=before;
-            for(auto it=before.rbegin();it!=before.rend();++it)if(std::find(after.begin(),after.end(),*it)==after.end()){std::erase(down,*it);k->sendKey(now(),*it,WL_KEYBOARD_KEY_STATE_RELEASED);k->sendMods(Held::mask(original->m_xkbKeymap,down),0,0,0);}
-            for(auto code:after)if(std::find(down.begin(),down.end(),code)==down.end()){down.push_back(code);k->sendKey(now(),code,WL_KEYBOARD_KEY_STATE_PRESSED);k->sendMods(Held::mask(original->m_xkbKeymap,down),0,0,0);}
+            for(auto it=before.rbegin();it!=before.rend();++it)if(std::find(after.begin(),after.end(),*it)==after.end()){std::erase(down,*it);k->sendKey(now(),*it,WL_KEYBOARD_KEY_STATE_RELEASED);k->sendMods(Held::mask(map->m_xkbKeymap,down),0,0,0);}
+            for(auto code:after)if(std::find(down.begin(),down.end(),code)==down.end()){down.push_back(code);k->sendKey(now(),code,WL_KEYBOARD_KEY_STATE_PRESSED);k->sendMods(Held::mask(map->m_xkbKeymap,down),0,0,0);}
         }
         for(auto s:strokes) { k->sendMods(s.mods|heldMods,0,0,0); k->sendKey(now(),s.code,WL_KEYBOARD_KEY_STATE_PRESSED); k->sendKey(now(),s.code,WL_KEYBOARD_KEY_STATE_RELEASED); }
-        k->sendMods(heldMods,0,0,0); k->sendKeymap(original);
-        if(previous==target) {auto m=original->m_modifiersState;k->sendMods(m.depressed|heldMods,m.latched,m.locked,m.group);}
+        k->sendMods(heldMods,0,0,0);
+        if(map==original && previous==target) {auto m=original->m_modifiersState;k->sendMods(m.depressed|heldMods,m.latched,m.locked,m.group);}
     }
+    // Another map stays until the client has handled these keys (keymap.hpp).
+    if(map!=original && keys)Keymap::arm(window,seat,map);
     if(op=="hold") {
         if(held && after.empty())std::erase_if(Held::states,[&](auto& s){return &s==held;});
         json_object* owner=nullptr;int pid=json_object_object_get_ex(j,"owner",&owner)?json_object_get_int(owner):0;
@@ -325,6 +349,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     Clipboard::setup(plugin);
     Capture::setup();
     Held::setup();
+    Keymap::setup();
     Routing::setup();
     Drag::setup(plugin);
     Popups::setup(plugin);
@@ -332,4 +357,4 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     Placement::setup(plugin);
     return {"codex-background","Window-targeted input without compositor focus or cursor movement","Codex Hyprland provider","0.1.0"};
 }
-APICALL EXPORT void PLUGIN_EXIT() { Placement::clear(); Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Routing::clear(); Clipboard::clear(); }
+APICALL EXPORT void PLUGIN_EXIT() { Placement::clear(); Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Keymap::clear(); Routing::clear(); Clipboard::clear(); }
