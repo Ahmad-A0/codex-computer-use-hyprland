@@ -296,9 +296,12 @@ size, position, or contents. Existing verified bindings survive title changes.
 
 Automation-created Wayland popup grabs stay private. Their keyboard events go to
 the owned popup, and the compositor's synthetic motion refresh cannot refocus the
-physical desktop. Physical input dismisses private grabs and resumes normal
-routing. X11 activation requests from drag icons and accessible actions are
-suppressed during the operation. Explicit user focus actions remain available.
+physical desktop. A grab is the user's only when its app has the seat's keyboard
+or pointer focus (or was just acted on), so a menu the app opens late, or while
+you type elsewhere, never takes your focus. As on macOS, a physical click outside
+the menu closes it; typing and pointer motion elsewhere leave it open. X11
+activation requests from drag icons and accessible actions are suppressed during
+the operation. Explicit user focus actions remain available.
 
 App screenshots composite owned popup surfaces without sampling unrelated desktop
 pixels. Coordinate input translates the latest screenshot origin, including
@@ -318,9 +321,10 @@ through labelled-by relations. The provider listens for those events from
 startup and attaches a showing popup only when the compositor (or the X11
 transient chain) shows a popup of the same size on the bound window and on no
 other window of the app, so other windows' menus never enter the tree. Menus are
-the window's last children. Qt on Wayland ignores a second right-click at
-exactly the same point after its context menu closed. An event-only menu (Qt,
-a GTK 4 entry's) opened before the provider started appears once it is reopened.
+the window's last children. Clicks move the pointer onto their point first, as a
+user's pointer arrives, so Qt reopens a context menu right-clicked again at the
+same point. An event-only menu (Qt, a GTK 4 entry's) opened before the provider
+started appears once it is reopened.
 
 Sky audio recording is not implemented; `drag` still takes a two-point path.
 Provider-owned input guards enforce confinement and authentication checks. Input remains serialized under the seat lock;
