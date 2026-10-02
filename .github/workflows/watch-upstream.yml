@@ -36,6 +36,10 @@ jobs:
   test:
     needs: check
     if: needs.check.outputs.changed == 'true'
+    # A called workflow gets no more permissions than its calling job grants.
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
 
@@ -92,6 +96,11 @@ jobs:
   fix:
     needs: report
     if: always() && needs.report.outputs.issue != ''
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
     uses: ./.github/workflows/fix.yml
     with:
       issue: ${{ needs.report.outputs.issue }}
