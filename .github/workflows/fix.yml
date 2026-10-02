@@ -50,11 +50,12 @@ jobs:
         run: gh run download "${{ inputs.failed_run }}" --dir failed-run || echo 'no artifacts'
         env:
           GH_TOKEN: ${{ github.token }}
-      - uses: anthropics/claude-code-action@v1
+      - id: claude
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          claude_args: --max-turns 400 --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+          claude_args: --model claude-opus-5-5 --max-turns 400 --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
           prompt: |
             You maintain this repository: a Hyprland provider for OpenAI's Codex computer-use
             interface. Read AGENTS.md, README.md and docs/DESIGN.md first and follow them.
@@ -81,3 +82,21 @@ jobs:
             If you cannot fix it within the budget, comment on the issue with your findings,
             what you tried and the evidence instead. Do not push to main, create tags or
             releases, or change workflow files. Work on top of ${{ inputs.base || 'main' }}.
+      # The transcript stays private (an artifact, not the public log).
+      - if: always() && steps.claude.outputs.execution_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: fix-agent-transcript
+          path: ${{ steps.claude.outputs.execution_file }}
+      # A finished agent must have opened a pull request or reported on the issue.
+      - name: Check the agent produced a result
+        if: always()
+        run: |
+          prs=$(gh pr list --state all --search "Fixes #${{ inputs.issue }}" --json number --jq length)
+          since=$(date -u -d '-6 hours' +%Y-%m-%dT%H:%M:%SZ)
+          comments=$(gh api "repos/${{ github.repository }}/issues/${{ inputs.issue }}/comments?since=$since" --jq length)
+          echo "pull requests: $prs, recent issue comments: $comments"
+          [ "$prs" -gt 0 ] || [ "$comments" -gt 0 ] || { echo 'The agent finished without a pull request or an issue comment.'; exit 1; }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
