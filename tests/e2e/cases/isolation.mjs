@@ -56,7 +56,10 @@ export default function (test) {
 export function finish(test) {
   test('isolation: the user\'s window received no input during the run', async () => {
     const decoy = state('codex-e2e-shared');
-    expect(decoy.text === '' && decoy.keys.length === 0 && decoy.clicks === 0, JSON.stringify(decoy));
+    // Shift_L comes from the virtual-keyboard test's own wtype, which types into
+    // whatever has focus, as a user's keyboard would; anything else is ours.
+    const keys = decoy.keys.filter((key) => key !== 'Shift_L');
+    expect(decoy.text === '' && keys.length === 0 && decoy.clicks === 0, JSON.stringify(decoy));
   });
 
   test('isolation: the clipboard is unchanged', async () => {

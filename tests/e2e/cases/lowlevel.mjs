@@ -1,5 +1,6 @@
 // Sky's lower-level Linux commands, reached through cua.computer.
-import { ensure, expect, js, state, strict, until } from '../lib.mjs';
+import { spawn } from 'node:child_process';
+import { ensure, expect, js, sleep, state, strict, until, which } from '../lib.mjs';
 
 export default function (test) {
   test('low-level: held Shift extends a selection across key presses', async () => {
@@ -55,4 +56,31 @@ export default function (test) {
     expect(Date.now() - started >= 400, 'duration was not held');
     await until(() => state('codex-e2e-gtk').text.startsWith('z'), 'held key typed');
   });
+
+  test('keyboard: shortcuts, held keys and XWayland typing while another virtual keyboard is active', async () => {
+    // A tool such as wtype replaces the seat's keymap with its own few keys.
+    // Our input must not depend on it (regressions: GTK ignored ctrl+a/End/
+    // Escape, held keys failed, XWayland keys were "not mapped").
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
+    await ensure('xgtk', 'codex-e2e-xgtk.desktop', { timeout: 30000 });
+    const noise = spawn('wtype', ['-k', 'Shift_L', '-s', '60000'], { stdio: 'ignore' });
+    try {
+      await sleep(500);
+      await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.setValue(i, "old text"); await gtk.click(i);
+        await gtk.pressKey("ctrl+a"); await gtk.typeText("replaced"); await gtk.getAXState({ emit: false });`);
+      await until(() => state('codex-e2e-gtk').text === 'replaced', 'ctrl+a then typing under a foreign keymap');
+      await js(`const w = await e2eWindow("Codex E2E GTK"); const i = await e2eFind(gtk, "E2E entry", "text");
+        await gtk.setValue(i, "abcdef"); await gtk.click(i); await cua.computer.press_key({ window: w, key: "End" });
+        await cua.computer.key_down({ window: w, key: "shift" });
+        try { for (let n = 0; n < 3; n++) await cua.computer.press_key({ window: w, key: "Left" }); }
+        finally { await cua.computer.key_up({ window: w, key: "shift" }); }
+        await gtk.getAXState({ emit: false });`);
+      await until(() => JSON.stringify(state('codex-e2e-gtk').selection) === '[3,6]', 'held shift under a foreign keymap');
+      await js(`const i = await e2eFind(xgtk, "E2E entry", "text"); await xgtk.click(i); await xgtk.pressKey("ctrl+a");
+        await xgtk.typeText("x11 keys"); await xgtk.getAXState({ emit: false });`);
+      await until(() => state('codex-e2e-xgtk').text === 'x11 keys', 'XWayland typing under a foreign keymap');
+    } finally {
+      noise.kill();
+    }
+  }, { needs: strict ? (which('wtype') ? null : 'wtype not installed') : 'VM only (a virtual keyboard would type into your focused window)' });
 }
