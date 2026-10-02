@@ -174,6 +174,16 @@ window, exiting the provider (the module reaps holds of a dead provider within a
 second) or unloading the module also releases them. An X11 hold left by a
 killed provider persists on the private device until the next X11 action.
 
+X11 keys do not depend on the seat's current keymap. XWayland's core keymap is
+that of the last Wayland keyboard used; after a virtual keyboard such as `wtype`
+it holds only that tool's keys. A key or character the core map lacks is bound,
+for the duration of one helper run, to a core keycode without symbols (the
+private keyboard's own keycode for it when free), and that key is restored once
+the target has answered a `_NET_WM_PING` sent after the input. Physical
+keyboards and other X devices keep their maps. A binding replaced by a new seat
+keymap is not touched, and bindings left by a killed helper are undone by the
+next run (a root-window journal records them).
+
 `type_text` with an element validates that it is editable and visible, focuses it
 through AT-SPI, and restores its caret and selection (GTK selects all on focus).
 `drag_handle` presses at `start` (desktop coordinates, like the official client),
