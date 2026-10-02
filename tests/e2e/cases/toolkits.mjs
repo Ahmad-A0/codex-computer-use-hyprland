@@ -48,7 +48,8 @@ export default function (test) {
       await bind('qt', 'codex-e2e-qt.desktop', { timeout: 30000 });
     }
     await js(`await qt.setValue(await e2eFind(qt, "Qt entry", "text"), "menu target");`);
-    await contextMenu('qt', 'Qt entry', 'text', 'Select All');
+    // Reopened at the same point, as a user may right-click twice.
+    await contextMenu('qt', 'Qt entry', 'text', 'Select All', { reopen: true });
     await until(() => JSON.stringify(state('codex-e2e-qt').selection) === '[0,11]', 'select all from the Qt menu');
     const text = await js(`const button = await e2eFind(qt, "Qt menu button", "push button menu");
       await qt.getAXState({ emit: false });

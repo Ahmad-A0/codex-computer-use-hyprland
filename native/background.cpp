@@ -140,7 +140,10 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
     } else if(op=="key") {
         auto sym=xkb_keysym_from_name(str(j,"key").c_str(),XKB_KEYSYM_CASE_INSENSITIVE);
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
-        auto stroke=lookup(map->m_xkbKeymap,sym);
+        // The seat's map is that of the last keyboard used, which may be a
+        // virtual keyboard (wtype) that maps only a few keys; then use a full map.
+        Stroke stroke{};
+        try{stroke=lookup(map->m_xkbKeymap,sym);}catch(const std::runtime_error&){map=makeShared<TextKeyboard>("");stroke=lookup(map->m_xkbKeymap,sym);}
         auto mods=field(j,"modifiers"); require(json_object_is_type(mods,json_type_array),"Expected modifiers array");
         for(size_t i=0;i<json_object_array_length(mods);++i) {
             std::string name=json_object_get_string(json_object_array_get_idx(mods,i));
@@ -269,16 +272,25 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         auto previous=g_pSeatManager->m_state.pointerFocus.lock();
         Vector2D previousLocal;
         if(previous && previous->client()==seat->client()) {
+            // A focused surface without global geometry (unmapped, or a popup of a
+            // window that is not drawn) cannot be under the physical pointer; it
+            // gets the pointer back at its origin, as Hyprland itself focuses one.
             auto wrapper=Desktop::View::CWLSurface::fromResource(previous);
-            require(bool(wrapper),"Cannot preserve existing pointer surface");
-            auto box=wrapper->getSurfaceBoxGlobal(); require(bool(box),"Cannot preserve pointer coordinates");
-            previousLocal=Pointer::mgr()->position()-Vector2D{box->x,box->y};
+            auto box=wrapper?wrapper->getSurfaceBoxGlobal():std::nullopt;
+            if(box)previousLocal=Pointer::mgr()->position()-Vector2D{box->x,box->y};
         }
         std::vector<SP<CWLPointerResource>> resources;
         for(auto& weak:seat->m_pointers) if(auto p=weak.lock()) resources.push_back(p);
         require(!resources.empty(),"Application has no Wayland pointer resource");
         for(auto& p:resources) {
-            auto t=now(); p->sendEnter(surface,local); p->sendMotion(t,local); p->sendFrame();
+            auto t=now(); p->sendEnter(surface,local);
+            // A user's pointer moves onto what it clicks; toolkits drop motion to
+            // the position they last saw. Qt needs real motion after a press
+            // whose release went to the menu it opened: without it, the next
+            // right-click there sends its context menu to the window, not to
+            // the widget under the pointer, and no menu opens.
+            if(op=="click"){p->sendMotion(t,local+Vector2D{local.x>=1?-1.0:1.0,0.0});p->sendFrame();}
+            p->sendMotion(t,local); p->sendFrame();
             if(op=="click") for(int i=0;i<count;++i) { p->sendButton(t+i*30,button,WL_POINTER_BUTTON_STATE_PRESSED); p->sendFrame(); p->sendButton(t+i*30+1,button,WL_POINTER_BUTTON_STATE_RELEASED); p->sendFrame(); }
             if(op=="drag") {
                 p->sendButton(t,button,WL_POINTER_BUTTON_STATE_PRESSED); p->sendFrame();
