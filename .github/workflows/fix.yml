@@ -11,6 +11,10 @@ on:
       failed_run:
         type: string
         required: false
+      base:
+        type: string
+        required: false
+        default: main
   workflow_dispatch:
     inputs:
       issue:
@@ -19,6 +23,10 @@ on:
       failed_run:
         description: Run ID whose artifacts show the failure (optional)
         required: false
+      base:
+        description: Branch to fix and open the pull request against
+        required: false
+        default: main
 concurrency:
   group: fix-${{ inputs.issue }}
   cancel-in-progress: false
@@ -34,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.base || 'main' }}
           fetch-depth: 0
       - uses: ./.github/actions/e2e-vm-host
       - name: Failure evidence
@@ -67,8 +76,8 @@ jobs:
                differences with Hyprland's version macros so older releases still build).
             3. Rerun the full `./test` until it passes.
             4. Push a branch named fix/issue-${{ inputs.issue }} and open a pull request against
-               main with `gh pr create`: what broke, why, the fix, and the passing test evidence
+               ${{ inputs.base || 'main' }} with `gh pr create --base ${{ inputs.base || 'main' }}`: what broke, why, the fix, and the passing test evidence
                (summary of results.json). Reference "Fixes #${{ inputs.issue }}".
             If you cannot fix it within the budget, comment on the issue with your findings,
             what you tried and the evidence instead. Do not push to main, create tags or
-            releases, or change workflow files.
+            releases, or change workflow files. Work on top of ${{ inputs.base || 'main' }}.
