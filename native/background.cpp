@@ -140,7 +140,10 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
     } else if(op=="key") {
         auto sym=xkb_keysym_from_name(str(j,"key").c_str(),XKB_KEYSYM_CASE_INSENSITIVE);
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
-        auto stroke=lookup(map->m_xkbKeymap,sym);
+        // The seat's map is that of the last keyboard used, which may be a
+        // virtual keyboard (wtype) that maps only a few keys; then use a full map.
+        Stroke stroke{};
+        try{stroke=lookup(map->m_xkbKeymap,sym);}catch(const std::runtime_error&){map=makeShared<TextKeyboard>("");stroke=lookup(map->m_xkbKeymap,sym);}
         auto mods=field(j,"modifiers"); require(json_object_is_type(mods,json_type_array),"Expected modifiers array");
         for(size_t i=0;i<json_object_array_length(mods);++i) {
             std::string name=json_object_get_string(json_object_array_get_idx(mods,i));
