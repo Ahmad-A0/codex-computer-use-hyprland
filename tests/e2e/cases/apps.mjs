@@ -51,7 +51,9 @@ function saveScenario(test, label, id, program, bus) {
       globalThis.save = await cua.getApp({ windowId: dialog.id });
       const tree = await save.getAXState({ emit: false, disableDiffing: true });
       await save.setValue(e2eIndex(tree, "Name", "text (settable)"), ${JSON.stringify(file)});
-      await save.pressKey("Return");`, { timeout: 30000 });
+      // Setting a field's value doesn't move focus (nor on macOS), so press Save itself.
+      await save.click(e2eIndex(await save.getAXState({ emit: false, disableDiffing: true }), "Save", "button"));`,
+    { timeout: 30000 });
     await until(() => existsSync(file) && readFileSync(file, 'utf8').replace(/\n$/, '') === 'Written by Codex\nSecond line ✓',
       'saved file contents', 10000);
     await js(`delete globalThis.editor;`);
