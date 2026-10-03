@@ -119,7 +119,7 @@ Then remove the package (or the checkout) and `~/.cache/codex-computer-use-hyprl
 
 - `getApp` binds one window; macOS binds a whole app.
 - Dragging between a native Wayland window and an XWayland window isn't supported.
-- Computer-audio recording isn't implemented.
+- Computer-audio recording isn't implemented (not planned for now).
 
 ## Development
 
@@ -141,3 +141,5 @@ Then remove the package (or the checkout) and `~/.cache/codex-computer-use-hyprl
 This project is not affiliated with OpenAI. It distributes none of OpenAI's code: at
 run time it makes a private, patched copy of the runtime packages from your own
 ChatGPT/Codex installation, on your machine, and leaves the installed files untouched.
+
+Released under the [MIT License](LICENSE).

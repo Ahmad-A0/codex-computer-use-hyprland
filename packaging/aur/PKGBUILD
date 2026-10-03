@@ -10,8 +10,7 @@ pkgrel=1
 pkgdesc='Hyprland backend for the Codex computer-use (cua_repl) API'
 arch=('x86_64')
 url='https://github.com/Ahmad-A0/codex-computer-use-hyprland'
-# TODO: the repository has no LICENSE yet; choose one before publishing.
-license=('unknown')
+license=('MIT')
 # The compositor plugin can only be compiled against the Hyprland that is
 # installed when it runs: Hyprland checks the plugin ABI (its commit and
 # dependency versions) when loading, and the build must match the running
@@ -71,4 +70,5 @@ package() {
     install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/codex-hyprland-prebuild.service"
 
   install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md docs/DESIGN.md
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
 }

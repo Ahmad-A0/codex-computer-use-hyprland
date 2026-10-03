@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "codex-computer-use-hyprland"
 version = "0.1.0"
 description = "Hyprland backend for the unchanged Codex Sky and cua_repl APIs"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = ["markdown-it-py==4.2.0", "tomlkit>=0.13.3,<1"]
 
 [project.scripts]
