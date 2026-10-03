@@ -18,6 +18,10 @@ entry('codex-e2e-forbidden', 'Codex E2E Forbidden',
   `${shared} ${statePath('gcr-prompter')} gcr-prompter "Codex E2E Forbidden"`, 'StartupWMClass=gcr-prompter\n');
 const sentinel = 'codex-e2e-clipboard-sentinel';
 
+// Shift_L comes from the virtual-keyboard test's own wtype, which types into
+// whatever has focus, as a user's keyboard would; any other key is ours.
+const agentKeys = (decoy) => decoy.keys.filter((key) => key !== 'Shift_L');
+
 export function setup(test) {
   test('isolation: decoy user window of a shared program', async () => {
     // In the VM it is focused, as the user's active app is; on a live desktop it
@@ -36,7 +40,7 @@ export default function (test) {
     await js(`await custom.setValue(await e2eFind(custom, "E2E entry", "text"), "custom app");`);
     await until(() => state('codex-e2e-custom').text === 'custom app', 'custom app text');
     const decoy = state('codex-e2e-shared');
-    expect(decoy.text === '' && decoy.keys.length === 0, `decoy received input: ${JSON.stringify(decoy)}`);
+    expect(decoy.text === '' && agentKeys(decoy).length === 0, `decoy received input: ${JSON.stringify(decoy)}`);
   });
 
   test('isolation: a declined approval blocks the action', async () => {
@@ -56,10 +60,7 @@ export default function (test) {
 export function finish(test) {
   test('isolation: the user\'s window received no input during the run', async () => {
     const decoy = state('codex-e2e-shared');
-    // Shift_L comes from the virtual-keyboard test's own wtype, which types into
-    // whatever has focus, as a user's keyboard would; anything else is ours.
-    const keys = decoy.keys.filter((key) => key !== 'Shift_L');
-    expect(decoy.text === '' && keys.length === 0 && decoy.clicks === 0, JSON.stringify(decoy));
+    expect(decoy.text === '' && agentKeys(decoy).length === 0 && decoy.clicks === 0, JSON.stringify(decoy));
   });
 
   test('isolation: the clipboard is unchanged', async () => {
