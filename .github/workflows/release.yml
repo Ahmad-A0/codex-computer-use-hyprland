@@ -30,7 +30,9 @@ jobs:
           useradd -m builder && chown -R builder .
           su builder -c "makepkg --printsrcinfo > .SRCINFO && makepkg --nodeps --nobuild --skipinteg"
           namcap PKGBUILD || true
-          gh release upload "$TAG" "$name-$version.tar.gz" PKGBUILD .SRCINFO --clobber
+          # GitHub renames dot-file assets ("default.SRCINFO"); name it plainly.
+          cp .SRCINFO SRCINFO
+          gh release upload "$TAG" "$name-$version.tar.gz" PKGBUILD SRCINFO --clobber
         env:
           TAG: ${{ github.event.release.tag_name }}
           SERVER: ${{ github.server_url }}
