@@ -22,16 +22,24 @@ SigLevel = Required DatabaseRequired TrustedOnly
 Server = https://persistent.oaistatic.com/codex-app-prod/linux/arch/$arch
 EOF
 sed -i 's/^#\?ParallelDownloads.*/ParallelDownloads = 10/' /etc/pacman.conf
+# The cloud image's single mirror sometimes stalls; pacman falls back in order.
+cat >> /etc/pacman.d/mirrorlist <<'EOF'
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+Server = https://mirror.rackspace.com/archlinux/$repo/os/$arch
+Server = https://mirrors.kernel.org/archlinux/$repo/os/$arch
+EOF
+# Retries resume where a stalled download left off.
+retry() { for n in 1 2 3; do "$@" && return; echo "retrying ($n): $*" >&2; sleep 10; done; "$@"; }
 
-pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring
+retry pacman -Sy --noconfirm --needed --noprogressbar archlinux-keyring
 # Keep the running kernel's modules: no reboot happens before the tests.
-pacman -Su --noconfirm --needed --noprogressbar --ignore linux \
+retry pacman -Su --noconfirm --needed --noprogressbar --ignore linux \
   hyprland xorg-xwayland mesa grim wl-clipboard uv \
   python-gobject at-spi2-core python-pillow \
   base-devel pkgconf json-c libxkbcommon libx11 libxi libxtst libxcomposite libxres libxfixes \
   gtk3 python-pyqt6 chromium foot ttf-dejavu nodejs npm chatgpt-bin \
   gnome-text-editor mousepad featherpad gnome-calculator firefox xterm wtype
-npm install -g --silent @openai/codex
+retry npm install -g --silent @openai/codex
 
 home=$(getent passwd "$user" | cut -d: -f6)
 install -d -o "$user" -g "$user" "$home/.config" "$home/.config/hypr"
