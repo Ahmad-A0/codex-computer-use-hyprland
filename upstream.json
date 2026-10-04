@@ -2,10 +2,10 @@
   "comment": "Upstream versions the end-to-end suite last passed with; updated by .github/workflows/watch-upstream.yml.",
   "tested": {
     "versions": {
-      "chatgpt-bin": "26.930.31730-1",
-      "hyprland": "0.56.2-3"
+      "chatgpt-bin": "26.930.41038-1",
+      "hyprland": "0.56.2-4"
     },
-    "date": "2026-10-03",
-    "run": "https://github.com/Ahmad-A0/codex-computer-use-hyprland/actions/runs/37116485285"
+    "date": "2026-10-04",
+    "run": "https://github.com/Ahmad-A0/codex-computer-use-hyprland/actions/runs/37197751420"
   }
 }
