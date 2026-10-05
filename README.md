@@ -129,13 +129,17 @@ Then remove the package (or the checkout) and `~/.cache/codex-computer-use-hyprl
   are checked in the apps themselves. `E2E_ONLY=<regex>` selects tests; each run writes
   an HTML report with screenshots.
 - `./test` does the same in a disposable Arch VM: OpenAI's package from its repository,
-  Hyprland, `./install` as a user would, then the suite.
+  Hyprland, `./install` as a user would, then the suite. `E2E_HYPRLAND=git ./test`
+  uses Hyprland's development branch instead, built from source in the VM.
 - CI runs the VM suite on every push. New ChatGPT/Codex and Hyprland releases are
   tested as soon as they appear (a poller, `scripts/release/poller/`, triggers the
   check; a daily schedule is the fallback). A failure opens an issue and a Claude Code
   agent proposes a fix as a pull request, which is then verified independently: a fresh
   VM run, a check that existing tests are unchanged, and a second agent's review. When
   a merged change passes on main, a release is published automatically.
+- A daily job also runs the suite against each new commit of Hyprland's `main`, as an
+  early warning before a release ships the change; failures open a `hyprland-main`
+  issue and start the same fix agent.
 - [docs/DESIGN.md](docs/DESIGN.md) covers the architecture and implementation details;
   [AGENTS.md](AGENTS.md) the rules for automated contributors.
 

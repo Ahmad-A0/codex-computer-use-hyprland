@@ -1,0 +1,134 @@
+name: hyprland-main
+# Daily early warning: run the end-to-end suite against Hyprland's development
+# branch (main of hyprwm/Hyprland, built from source in the VM), so plugin and
+# API breakage shows up before Arch ships it in a release. Only new commits are
+# tested. Green: record the commit in upstream.json ("hyprland-main"). Red:
+# open (or update) a hyprland-main issue and start the fix agent.
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Test even if Hyprland main has not changed since the last pass
+        type: boolean
+        default: false
+concurrency:
+  group: hyprland-main
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      commit: ${{ steps.compare.outputs.commit }}
+      tested: ${{ steps.compare.outputs.tested }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: compare
+        run: |
+          commit=$(git ls-remote https://github.com/hyprwm/Hyprland refs/heads/main | cut -f 1)
+          [ -n "$commit" ] || { echo 'Hyprland main lookup failed' >&2; exit 1; }
+          tested=$(python3 -c 'import json; print(json.load(open("upstream.json")).get("hyprland-main", {}).get("commit", ""))')
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+          if [ "$commit" != "$tested" ] || [ "${{ inputs.force }}" = true ]; then echo changed=true; else echo changed=false; fi >> "$GITHUB_OUTPUT"
+          echo "Tested: ${tested:-none}  Latest: $commit"
+
+  test:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    # A called workflow gets no more permissions than its calling job grants.
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      hyprland: git
+    secrets: inherit
+
+  record:
+    needs: [check, test]
+    if: needs.check.outputs.changed == 'true' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          # The commit the VM built (main may have moved since the check).
+          commit=$(echo "$VERSIONS" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read() or "{}").get("hyprland-commit", ""))' || true)
+          export COMMIT=${commit:-$CHECKED}
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Other jobs (watch-upstream) also commit upstream.json: on a rejected
+          # push, redo the edit on top of the new main.
+          for attempt in 1 2 3; do
+            python3 - <<'PY'
+          import json, os, datetime
+          data = json.load(open('upstream.json'))
+          data['hyprland-main'] = {'commit': os.environ['COMMIT'],
+                                   'date': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'),
+                                   'run': os.environ['RUN']}
+          open('upstream.json', 'w').write(json.dumps(data, indent=2) + '\n')
+          PY
+            git commit -qam "Tested with Hyprland main ${COMMIT:0:12}"
+            git push && exit 0
+            git fetch -q origin "$GITHUB_REF_NAME" && git reset -q --hard FETCH_HEAD
+          done
+          exit 1
+        env:
+          VERSIONS: ${{ needs.test.outputs.versions }}
+          CHECKED: ${{ needs.check.outputs.commit }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  report:
+    needs: [check, test]
+    if: always() && needs.check.outputs.changed == 'true' && needs.test.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    outputs:
+      issue: ${{ steps.issue.outputs.number }}
+    steps:
+      - id: issue
+        run: |
+          since=
+          [ -z "$TESTED" ] || since="
+          Changes since the last passing commit: https://github.com/hyprwm/Hyprland/compare/$TESTED...$COMMIT"
+          body="Early warning: the end-to-end suite failed against Hyprland's development branch,
+          hyprwm/Hyprland@$COMMIT (main, built from source in the test VM). This is unreleased
+          Hyprland: Arch's package and current users are not affected yet, but the provider is
+          likely to break when a release ships this change.$since
+
+          Run: $RUN (artifacts include the HTML report with screenshots, provision.log with the
+          Hyprland build, and versions.json). Reproduce with \`E2E_HYPRLAND=git ./test\`
+          (\`E2E_HYPRLAND_COMMIT=$COMMIT\` pins this commit)."
+          gh label create hyprland-main --color fbca04 --description 'Unreleased Hyprland (main) breaks the provider' 2>/dev/null || true
+          number=$(gh issue list --label hyprland-main --state open --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment "$number" --body "$body"
+          else number=$(gh issue create --label hyprland-main --title "Hyprland main breaks the provider" --body "$body" | grep -o '[0-9]*$'); fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+          TESTED: ${{ needs.check.outputs.tested }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  fix:
+    needs: report
+    if: always() && needs.report.outputs.issue != ''
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+    uses: ./.github/workflows/fix.yml
+    with:
+      issue: ${{ needs.report.outputs.issue }}
+      failed_run: ${{ github.run_id }}
+      hyprland: git
+    secrets: inherit
