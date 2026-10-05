@@ -179,4 +179,4 @@ for line in open(sys.argv[2]):
 print(json.dumps(versions))
 EOF
 cat "$record"
-echo "Hyprland from git built in $(( $(date +%s) - started ))s"
+echo "Hyprland from git built in $(( $(date +%s) - started ))s (build tree $(du -sh "$work" | cut -f 1), removed)"

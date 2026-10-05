@@ -66,4 +66,7 @@ EOF
 # No xdg-desktop-portal: GTK file choosers stay in-process.
 rm -rf /var/cache/pacman/pkg/* /root/.npm
 cloud-init clean --logs
+# Commit the deletions first: btrfs trims only space a committed transaction freed.
+sync
 fstrim -a
+df -h /
