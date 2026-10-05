@@ -48,7 +48,22 @@ permissions:
   issues: write
   actions: read
 jobs:
+  # A breakage that persists is reported again (daily, or per new upstream
+  # version) while its fix waits for review; don't start a second agent then.
+  existing:
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.pr.outputs.pr }}
+    steps:
+      - id: pr
+        run: echo "pr=$(gh pr list --head fix/issue-${{ inputs.issue }} --state open --json number --jq '.[0].number // ""')" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
   fix:
+    needs: existing
+    if: needs.existing.outputs.pr == ''
     runs-on: ubuntu-latest
     timeout-minutes: 300
     outputs:
@@ -232,13 +247,17 @@ jobs:
   # Tell the maintainer the outcome: a verified pull request to merge, or a
   # breakage the agent could not fix.
   notify:
-    needs: [fix, e2e-release, e2e-git, tests-untouched, review]
+    needs: [existing, fix, e2e-release, e2e-git, tests-untouched, review]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - run: |
           owner=@${{ github.repository_owner }}
           run="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$ISSUE" --body "Still failing; the proposed fix in #$EXISTING is awaiting merge, so no new fix was attempted. Run: $run"
+            exit 0
+          fi
           if [ -z "$PR" ]; then
             gh issue comment "$ISSUE" --body "$owner the fix agent could not produce a fix for this; its findings (if any) are above. Run: $run"
             exit 0
@@ -263,6 +282,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           ISSUE: ${{ inputs.issue }}
+          EXISTING: ${{ needs.existing.outputs.pr }}
           PR: ${{ needs.fix.outputs.pr }}
           E2E_RELEASE: ${{ needs.e2e-release.result }}
           E2E_GIT: ${{ needs.e2e-git.result }}
