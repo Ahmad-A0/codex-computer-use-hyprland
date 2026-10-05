@@ -3,8 +3,12 @@
 # Arch (Hyprland, the provider's prerequisites, test apps, ChatGPT/Codex), set
 # up a Hyprland session for USER through tty1 autologin from the next boot, and
 # clean up so the disk can be cached.
+#   provision.sh USER [release | git COMMIT]
+# git replaces Arch's Hyprland with its development branch at COMMIT
+# (hyprland-git.sh).
 set -eu
 user=${1:-tester}
+variant=${2:-release}
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 fingerprint=3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4
 
@@ -40,6 +44,7 @@ retry pacman -Su --noconfirm --needed --noprogressbar --ignore linux \
   gtk3 python-pyqt6 chromium foot ttf-dejavu nodejs npm chatgpt-bin \
   gnome-text-editor mousepad featherpad gnome-calculator firefox xterm wtype
 retry npm install -g --silent @openai/codex
+if [ "$variant" = git ]; then sh "$here/hyprland-git.sh" "$3"; fi
 
 home=$(getent passwd "$user" | cut -d: -f6)
 install -d -o "$user" -g "$user" "$home/.config" "$home/.config/hypr"

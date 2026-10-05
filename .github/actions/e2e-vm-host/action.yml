@@ -18,8 +18,9 @@ runs:
         sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
         sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils xorriso >/dev/null
         tests/e2e/vm/run.sh --cache-keys | tee -a "$GITHUB_OUTPUT"
-    # The provisioned disk is rebuilt daily and for new upstream releases; the
-    # base image is only needed to rebuild it.
+    # The provisioned disk is rebuilt daily, for new upstream releases and, with
+    # E2E_HYPRLAND=git, for new Hyprland commits; the base image is only needed
+    # to rebuild it.
     - if: inputs.save != 'true'
       id: ready
       uses: actions/cache/restore@v6
@@ -37,7 +38,8 @@ runs:
       shell: bash
       run: |
         c=~/.cache/codex-hyprland-e2e
-        f=$(ls "$c"/ready/provisioned-*.qcow2 2>/dev/null || true); f=${f##*/provisioned-}
+        # Newest, if the job built disks for both E2E_HYPRLAND variants.
+        f=$(ls -t "$c"/ready/provisioned-*.qcow2 2>/dev/null | head -1 || true); f=${f##*/provisioned-}
         [ -z "$f" ] || echo "ready=${f%.qcow2}" >> "$GITHUB_OUTPUT"
         f=$(ls "$c"/base/arch-cloudimg-*.qcow2 2>/dev/null || true); f=${f##*/arch-cloudimg-}
         [ -z "$f" ] || echo "base=${f%.qcow2}" >> "$GITHUB_OUTPUT"

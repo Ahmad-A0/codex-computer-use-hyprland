@@ -3,14 +3,27 @@
 # Hyprland and this provider the way a user would, and run the end-to-end suite
 # inside a real Hyprland session. Needs x86_64 Linux with KVM, qemu and one of
 # cloud-localds, xorriso or genisoimage.
+#   E2E_HYPRLAND     release (default): Arch's hyprland package. git: Hyprland's
+#                    development branch (main of github.com/hyprwm/Hyprland) built
+#                    from source in the guest over the package (hyprland-git.sh),
+#                    an early warning before Arch ships a release
+#   E2E_HYPRLAND_COMMIT  with git, the Hyprland commit to build (default: main's head)
 #   E2E_CACHE        images (default ~/.cache/codex-hyprland-e2e): base/ holds
-#                    the cloud image, ready/ the provisioned disk, rebuilt daily
-#                    or when provisioning changes. Tests run on a throwaway overlay.
+#                    the cloud image, ready/ the provisioned disk (one per
+#                    E2E_HYPRLAND variant), rebuilt daily, when provisioning
+#                    changes or, for git, for each new Hyprland commit. Tests run
+#                    on a throwaway overlay.
 #   E2E_REPROVISION  set to rebuild the provisioned disk
+#   E2E_VM_CPUS, E2E_VM_MEMORY  guest CPUs and MiB (default 2 and 4608; the git
+#                    variant provisions with all host CPUs and spare memory)
 #   E2E_ARTIFACTS    results, logs, versions.json, screenshot (default ./e2e-artifacts)
 #   E2E_ONLY         passed through to the suite
 #   E2E_TIMEOUT      suite time limit in seconds (default 900)
 # --cache-keys prints ready=<provisioned disk key> and base=<cloud image key>.
+# Keys: release <date>-<hash>, git git-<commit>-<date>-<hash>, where the hash
+# covers the provisioning scripts, cloud image, latest chatgpt-bin and Arch
+# hyprland and, for git, the Hyprland commit (which also pins the hyprwm
+# library revisions built with it, through its flake.lock).
 set -euo pipefail
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -40,21 +53,35 @@ versions['hyprland'] = f"{arch['pkgver']}-{arch['pkgrel']}"
 print(json.dumps(versions, sort_keys=True))
 EOF
 }
+variant=${E2E_HYPRLAND:-release}
+case $variant in
+  release) commit= prefix= ;;
+  git)
+    commit=${E2E_HYPRLAND_COMMIT:-$(git ls-remote https://github.com/hyprwm/Hyprland refs/heads/main | cut -f 1)}
+    [[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo "Hyprland main commit lookup failed: '$commit'" >&2; exit 1; }
+    prefix=git-${commit:0:12}- ;;
+  *) echo "E2E_HYPRLAND must be release or git, not '$variant'" >&2; exit 2 ;;
+esac
 sha=$(curl -fsSL --retry 3 "$image_url.SHA256" | cut -d ' ' -f 1)
-key=$(date -u +%F)-$(cat "$here/provision.sh" "$here/hyprland.lua" "$here/openai-chatgpt.gpg" <(echo "$sha") <(upstream) |
-  sha256sum | cut -c 1-16)
+key=$prefix$(date -u +%F)-$(cat "$here/provision.sh" "$here/hyprland.lua" "$here/openai-chatgpt.gpg" <(echo "$sha") <(upstream) \
+  <(if [ -n "$commit" ]; then cat "$here/hyprland-git.sh"; echo "$commit"; fi) | sha256sum | cut -c 1-16)
 if [ "${1:-}" = --cache-keys ]; then
   printf 'ready=%s\nbase=%s\n' "$key" "$sha"
   exit
 fi
 mkdir -p "$cache/base" "$cache/ready" "$artifacts"
 artifacts=$(cd "$artifacts" && pwd); cache=$(cd "$cache" && pwd)
-work=$(mktemp -d)
+# Next to the images, not in /tmp: the overlay grows by gigabytes while
+# provisioning, more than a tmpfs /tmp holds.
+work=$(mktemp -d "$cache/work.XXXXXX")
 : > "$artifacts/timings.txt"
 started=$(date +%s)
 mark() { echo "$1 $(( $(date +%s) - started ))s" | tee -a "$artifacts/timings.txt"; started=$(date +%s); }
 
 ready="$cache/ready/provisioned-$key.qcow2"
+# Older disks of this variant (release keys start with the date).
+if [ "$variant" = git ]; then stale='provisioned-git-*.qcow2'; else stale='provisioned-[0-9]*.qcow2'; fi
+vm_cpus=${E2E_VM_CPUS:-2} vm_memory=${E2E_VM_MEMORY:-4608}
 
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"
 port=${E2E_SSH_PORT:-$((20000 + RANDOM % 20000))}
@@ -84,7 +111,7 @@ EOF
     "$(command -v genisoimage || command -v mkisofs)" -quiet -o "$work/seed.iso" -V cidata -J -r "$work/user-data" "$work/meta-data"
   fi
   # virtio-gpu gives the guest a KMS device, as in Hyprland's own CI VM test.
-  qemu-system-x86_64 -accel kvm -cpu host -smp "${E2E_VM_CPUS:-2}" -m "${E2E_VM_MEMORY:-4608}" \
+  qemu-system-x86_64 -accel kvm -cpu host -smp "$vm_cpus" -m "$vm_memory" \
     -drive "if=virtio,file=$work/disk.qcow2,discard=unmap" \
     -drive "if=virtio,file=$work/seed.iso,format=raw,readonly=on" \
     -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
@@ -131,14 +158,21 @@ else
     mv "$base.part" "$base"
   fi
   mark base
+  if [ "$variant" = git ]; then
+    # Compiling Hyprland: every host CPU and the memory the host can spare.
+    spare=$(( $(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo) - 2048 ))
+    vm_cpus=${E2E_VM_CPUS:-$(nproc)}
+    vm_memory=${E2E_VM_MEMORY:-$(( spare > 12288 ? 12288 : spare > 4608 ? spare : 4608 ))}
+  fi
   boot "$base" -provision
   mark boot-provision
-  tar -C "$here" -cf - provision.sh hyprland.lua openai-chatgpt.gpg | vm 'mkdir -p ~/provision && tar -C ~/provision -xf -'
-  vm "sudo sh ~/provision/provision.sh $user && rm -rf ~/provision" > "$artifacts/provision.log" 2>&1 ||
+  tar -C "$here" -cf - provision.sh hyprland-git.sh hyprland.lua openai-chatgpt.gpg | vm 'mkdir -p ~/provision && tar -C ~/provision -xf -'
+  vm "sudo sh ~/provision/provision.sh $user $variant $commit && rm -rf ~/provision" > "$artifacts/provision.log" 2>&1 ||
     { tail -50 "$artifacts/provision.log"; exit 1; }
   mark provision
   halt
-  rm -f "$cache"/ready/*.qcow2
+  vm_cpus=${E2E_VM_CPUS:-2} vm_memory=${E2E_VM_MEMORY:-4608}
+  rm -f "$cache"/ready/$stale
   qemu-img convert -c -O qcow2 -o compression_type=zstd "$work/disk.qcow2" "$ready.part"
   mv "$ready.part" "$ready"
   mark seal
@@ -166,6 +200,12 @@ versions = dict(line.split() for line in subprocess.check_output(["pacman", "-Q"
 for name in ("cua", "sky"):
     with open(f"/usr/lib/chatgpt/resources/cua_node/lib/node_modules/@oai/{name}/package.json") as file:
         versions[f"@oai/{name}"] = json.load(file)["version"]
+# E2E_HYPRLAND=git: hyprland (git-<commit>), hyprland-commit and the hyprwm libraries built from git.
+try:
+    with open("/var/lib/codex-e2e/hyprland.json") as file:
+        versions.update(json.load(file))
+except FileNotFoundError:
+    pass
 print(json.dumps(versions))
 EOF' > "$artifacts/versions.json"
 cat "$artifacts/versions.json"
