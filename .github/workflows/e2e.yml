@@ -9,6 +9,11 @@ on:
       only:
         description: Test name regex (E2E_ONLY)
         required: false
+      hyprland:
+        description: release (Arch's package) or git (Hyprland main built from source)
+        type: choice
+        options: [release, git]
+        default: release
   workflow_call:
     inputs:
       only:
@@ -33,7 +38,11 @@ concurrency:
 jobs:
   vm:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # git compiles Hyprland (and any hyprwm libraries it needs) while provisioning.
+    timeout-minutes: ${{ inputs.hyprland == 'git' && 100 || 40 }}
+    # Job-wide, so the host action's cache keys are those of the variant ./test builds.
+    env:
+      E2E_HYPRLAND: ${{ inputs.hyprland || 'release' }}
     outputs:
       versions: ${{ steps.versions.outputs.json }}
     steps:
@@ -44,7 +53,6 @@ jobs:
       - run: ./test
         env:
           E2E_ONLY: ${{ inputs.only }}
-          E2E_HYPRLAND: ${{ inputs.hyprland || 'release' }}
       - uses: ./.github/actions/e2e-vm-host
         if: always()
         with:

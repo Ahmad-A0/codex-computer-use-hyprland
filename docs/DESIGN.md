@@ -362,6 +362,14 @@ DND prevent conflicting native delivery.
 
 Behaviour is checked by the end-to-end suite in `tests/e2e/` (see the README), locally with
 `./test --host` and in a disposable Arch VM with `./test`, which CI runs on every push.
+`.github/workflows/watch-upstream.yml` reruns it when OpenAI's package or Arch's
+Hyprland changes. `.github/workflows/hyprland-main.yml` runs it daily against each new
+commit of Hyprland's `main` (`E2E_HYPRLAND=git`): `tests/e2e/vm/hyprland-git.sh` builds that
+commit in the guest and installs it over Arch's package, together with any hyprwm library
+it needs newer than Arch ships (at the revisions in Hyprland's `flake.lock`), so the
+provider compiles its plugin against those headers exactly as against a release. The last
+passing commit is kept in `upstream.json` (`hyprland-main`); failures open a
+`hyprland-main` issue and start the fix agent (`fix.yml`).
 
 ## References
 
