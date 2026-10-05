@@ -1,0 +1,50 @@
+name: auto-release
+# When the end-to-end suite passes on a push to main (for example a merged fix
+# pull request) and something users install changed since the last release,
+# publish the next patch release and package it (release.yml). A release
+# published with the workflow token triggers no workflows, so packaging is
+# called directly.
+on:
+  workflow_run:
+    workflows: [e2e]
+    types: [completed]
+    branches: [main]
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: publish
+        run: |
+          # Only the newest tested main is released; a later push gets its own run.
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" != "$SHA" ]; then echo "main has moved on to $head; skipping $SHA"; exit 0; fi
+          tag=$(scripts/release/publish.sh "$SHA" "$RUN")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          [ -z "$tag" ] || echo "Published $tag"
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+  package:
+    needs: publish
+    if: needs.publish.outputs.tag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.publish.outputs.tag }}
+    secrets: inherit

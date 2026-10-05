@@ -1,7 +1,10 @@
 name: fix
 # Claude Code (on the maintainer's subscription token) reproduces an upstream
-# breakage in the end-to-end VM, fixes it, and opens a pull request. It never
-# pushes to main, tags or releases: merging and publishing stay with a human.
+# breakage in the end-to-end VM, fixes it, and opens a pull request. The pull
+# request is then verified independently of the agent: a fresh end-to-end run
+# (on released Hyprland, and on Hyprland main for early warnings), a check that
+# existing tests and workflows are untouched, and a second agent's review. The
+# maintainer is mentioned with the outcome; merging stays with them.
 on:
   workflow_call:
     inputs:
@@ -15,6 +18,11 @@ on:
         type: string
         required: false
         default: main
+      hyprland:
+        description: release, or git when the breakage is against Hyprland main
+        type: string
+        required: false
+        default: release
   workflow_dispatch:
     inputs:
       issue:
@@ -27,6 +35,10 @@ on:
         description: Branch to fix and open the pull request against
         required: false
         default: main
+      hyprland:
+        description: release, or git when the breakage is against Hyprland main
+        required: false
+        default: release
 concurrency:
   group: fix-${{ inputs.issue }}
   cancel-in-progress: false
@@ -39,6 +51,11 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    outputs:
+      pr: ${{ steps.result.outputs.pr }}
+      branch: ${{ steps.result.outputs.branch }}
+    env:
+      E2E_HYPRLAND: ${{ inputs.hyprland || 'release' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,11 +84,18 @@ jobs:
             report.html with screenshots and accessibility trees, versions.json) are in
             ./failed-run if present; look at the screenshots, not only the errors.
 
+            E2E_HYPRLAND is `${{ inputs.hyprland || 'release' }}` in this job. When it is `git`, the
+            breakage is an early warning against Hyprland's unreleased main branch: `./test`
+            then builds Hyprland main in the VM, and your fix must also keep working with
+            released Hyprland (`E2E_HYPRLAND=release ./test`); run both before opening the PR.
+
             1. Reproduce with `./test` (boots a disposable Arch VM with the latest packages,
                installs the provider like a user, runs the suite; E2E_ONLY=<regex> selects tests,
-               E2E_ARTIFACTS=<dir> keeps results). Each run takes several minutes: run at most 6.
-            2. Find the root cause and make the smallest correct fix. Never weaken or delete a
-               test to make it pass, and never gate on exact upstream versions. If OpenAI's
+               E2E_ARTIFACTS=<dir> keeps results). Each run takes several minutes: run at most 8.
+            2. Find the root cause and make the smallest correct fix. Never weaken, change or
+               delete an existing test to make it pass (adding a new test is welcome), and never
+               gate on exact upstream versions. Your pull request is rejected automatically if it
+               removes or changes lines under tests/ or touches .github/. If OpenAI's
                runtime changed shape, adapt the runtime adapter (scripts/prepare-runtime.mjs and
                scripts/runtime/); if Hyprland internals changed, adapt native/ (guard version
                differences with Hyprland's version macros so older releases still build).
@@ -90,13 +114,157 @@ jobs:
           path: ${{ steps.claude.outputs.execution_file }}
       # A finished agent must have opened a pull request or reported on the issue.
       - name: Check the agent produced a result
+        id: result
         if: always()
         run: |
-          prs=$(gh pr list --state all --search "Fixes #${{ inputs.issue }}" --json number --jq length)
+          branch=fix/issue-${{ inputs.issue }}
+          pr=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // ""')
           since=$(date -u -d '-6 hours' +%Y-%m-%dT%H:%M:%SZ)
           comments=$(gh api "repos/${{ github.repository }}/issues/${{ inputs.issue }}/comments?since=$since" --jq length)
-          echo "pull requests: $prs, recent issue comments: $comments"
-          [ "$prs" -gt 0 ] || [ "$comments" -gt 0 ] || { echo 'The agent finished without a pull request or an issue comment.'; exit 1; }
+          echo "pull request: ${pr:-none}, recent issue comments: $comments"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          [ -n "$pr" ] || [ "$comments" -gt 0 ] || { echo 'The agent finished without a pull request or an issue comment.'; exit 1; }
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+
+  # The agent's own test runs are not trusted: test its branch from scratch.
+  e2e-release:
+    needs: fix
+    if: always() && needs.fix.outputs.pr != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: ${{ needs.fix.outputs.branch }}
+      hyprland: release
+    secrets: inherit
+
+  e2e-git:
+    needs: fix
+    if: always() && needs.fix.outputs.pr != '' && inputs.hyprland == 'git'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: ${{ needs.fix.outputs.branch }}
+      hyprland: git
+    secrets: inherit
+
+  # A fix may add tests but not change or remove existing ones, and may not
+  # touch workflows: otherwise a failure could be "fixed" by weakening its test.
+  tests-untouched:
+    needs: fix
+    if: always() && needs.fix.outputs.pr != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          range=origin/${{ inputs.base || 'main' }}...origin/${{ needs.fix.outputs.branch }}
+          git diff --stat "$range"
+          removed=$(git diff --numstat "$range" -- tests | awk '{ n += $2 } END { print n + 0 }')
+          workflows=$(git diff --name-only "$range" -- .github | wc -l)
+          echo "lines removed or changed under tests/: $removed; files changed under .github/: $workflows"
+          [ "$removed" -eq 0 ] && [ "$workflows" -eq 0 ]
+
+  review:
+    needs: fix
+    if: always() && needs.fix.outputs.pr != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.fix.outputs.branch }}
+          fetch-depth: 0
+      - id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          claude_args: --model claude-opus-5-5 --max-turns 80 --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Read,Glob,Grep"
+          prompt: |
+            You are reviewing pull request #${{ needs.fix.outputs.pr }} in ${{ github.repository }},
+            written by an automated agent to fix issue #${{ inputs.issue }} (an upstream update
+            broke this Hyprland provider for OpenAI's Codex computer-use API). You did not write
+            it; judge it skeptically. Read AGENTS.md and docs/DESIGN.md, the issue
+            (`gh issue view ${{ inputs.issue }} --comments`), the PR (`gh pr view
+            ${{ needs.fix.outputs.pr }}`) and its diff (`gh pr diff ${{ needs.fix.outputs.pr }}`),
+            and the surrounding code. A separate job reruns the end-to-end suite, so focus on
+            what tests cannot show:
+            - Does the change fix the root cause the issue describes, or paper over a symptom?
+            - Does it break or degrade other behaviour, older Hyprland/Codex versions still in
+              use, or the rules in AGENTS.md (no exact version gating, no anchoring on minified
+              names, no focus/cursor/workspace changes for window-bound input, no edits to
+              installed packages)?
+            - Is anything unrelated, risky or unexplained included?
+            Post exactly one comment with `gh pr comment ${{ needs.fix.outputs.pr }} --body-file -`.
+            Its first line must be exactly `Review verdict: APPROVE` or
+            `Review verdict: CONCERNS`, followed by your reasoning and, for concerns, what
+            must change. Do not edit files or push.
+      - if: always() && steps.claude.outputs.execution_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-agent-transcript
+          path: ${{ steps.claude.outputs.execution_file }}
+      - id: verdict
+        if: always()
+        run: |
+          verdict=$(gh pr view "${{ needs.fix.outputs.pr }}" --json comments \
+            --jq '[.comments[].body | select(startswith("Review verdict: "))] | last // "" | split("\n")[0] | ltrimstr("Review verdict: ")')
+          echo "verdict: ${verdict:-none}"
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+  # Tell the maintainer the outcome: a verified pull request to merge, or a
+  # breakage the agent could not fix.
+  notify:
+    needs: [fix, e2e-release, e2e-git, tests-untouched, review]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          owner=@${{ github.repository_owner }}
+          run="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -z "$PR" ]; then
+            gh issue comment "$ISSUE" --body "$owner the fix agent could not produce a fix for this; its findings (if any) are above. Run: $run"
+            exit 0
+          fi
+          mark() { case "$1" in success|APPROVE) echo "✅ $2";; skipped) echo "➖ $2 (not needed)";; *) echo "❌ $2 (${1:-no result})";; esac; }
+          checks="$(mark "$E2E_RELEASE" 'End-to-end suite on released Hyprland')
+          $(mark "$E2E_GIT" 'End-to-end suite on Hyprland main')
+          $(mark "$TESTS" 'Existing tests and workflows untouched')
+          $(mark "$VERDICT" 'Independent review')"
+          if echo "$checks" | grep -q '❌'; then
+            headline="$owner this fix needs attention before merging:"
+            gh issue comment "$ISSUE" --body "$owner the fix in #$PR did not pass verification. Run: $run"
+          else
+            headline="$owner verified and ready to merge (merging publishes a release):"
+          fi
+          gh pr comment "$PR" --body "$headline
+
+          $checks
+
+          Run: $run"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ inputs.issue }}
+          PR: ${{ needs.fix.outputs.pr }}
+          E2E_RELEASE: ${{ needs.e2e-release.result }}
+          E2E_GIT: ${{ needs.e2e-git.result }}
+          TESTS: ${{ needs.tests-untouched.result }}
+          VERDICT: ${{ needs.review.outputs.verdict }}

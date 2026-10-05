@@ -130,9 +130,12 @@ Then remove the package (or the checkout) and `~/.cache/codex-computer-use-hyprl
   an HTML report with screenshots.
 - `./test` does the same in a disposable Arch VM: OpenAI's package from its repository,
   Hyprland, `./install` as a user would, then the suite.
-- CI runs the VM suite on every push. A daily job tests new ChatGPT/Codex and Hyprland
-  releases; failures open an issue and a Claude Code agent proposes a fix as a pull
-  request. Releases are drafted automatically and published by hand.
+- CI runs the VM suite on every push. New ChatGPT/Codex and Hyprland releases are
+  tested as soon as they appear (a poller, `scripts/release/poller/`, triggers the
+  check; a daily schedule is the fallback). A failure opens an issue and a Claude Code
+  agent proposes a fix as a pull request, which is then verified independently: a fresh
+  VM run, a check that existing tests are unchanged, and a second agent's review. When
+  a merged change passes on main, a release is published automatically.
 - [docs/DESIGN.md](docs/DESIGN.md) covers the architecture and implementation details;
   [AGENTS.md](AGENTS.md) the rules for automated contributors.
 

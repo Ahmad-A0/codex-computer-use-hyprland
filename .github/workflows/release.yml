@@ -1,11 +1,21 @@
 name: release
-# Publishing a release (normally the draft from draft-release.yml) attaches a
-# source tarball and an AUR PKGBUILD built and checked in an Arch container.
-# Pushing to the AUR is off until the AUR_PUBLISH variable is "true" and the
-# AUR_SSH_PRIVATE_KEY secret exists.
+# Packages a published release (from auto-release.yml, or one published by
+# hand): attaches a source tarball and an AUR PKGBUILD built and checked in an
+# Arch container. Pushing to the AUR is off until the AUR_PUBLISH variable is
+# "true" and the AUR_SSH_PRIVATE_KEY secret exists.
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package
+        required: true
 permissions:
   contents: write
 jobs:
@@ -16,7 +26,7 @@ jobs:
       - run: pacman -Syu --noconfirm --needed base-devel git github-cli namcap
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
       - name: Source tarball, PKGBUILD and .SRCINFO
         run: |
           git config --global --add safe.directory "$PWD"
@@ -34,7 +44,7 @@ jobs:
           cp .SRCINFO SRCINFO
           gh release upload "$TAG" "$name-$version.tar.gz" PKGBUILD SRCINFO --clobber
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
           SERVER: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -68,4 +78,4 @@ jobs:
           PKG: ${{ vars.AUR_PACKAGE || 'codex-computer-use-hyprland' }}
           NAME: ${{ vars.AUR_COMMIT_NAME || 'github-actions' }}
           EMAIL: ${{ vars.AUR_COMMIT_EMAIL || 'github-actions@users.noreply.github.com' }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}

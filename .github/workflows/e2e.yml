@@ -28,7 +28,7 @@ on:
         description: Versions installed in the guest (chatgpt-bin, hyprland, @oai/cua, @oai/sky), as JSON
         value: ${{ jobs.vm.outputs.versions }}
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}-${{ inputs.hyprland }}
   cancel-in-progress: true
 jobs:
   vm:

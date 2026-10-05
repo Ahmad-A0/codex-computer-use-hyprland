@@ -1,0 +1,8 @@
+[Unit]
+Description=Trigger codex-computer-use-hyprland's upstream check when chatgpt-bin or hyprland changes
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/codex-hyprland-poll/poll-upstream.sh
