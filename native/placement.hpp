@@ -41,7 +41,7 @@ inline void track(pid_t pid,unsigned long long start,const std::string& workspac
 // The registered app this process belongs to (itself or an ancestor), else an
 // environment marker the launcher left; descendants are registered on first sight.
 inline App* owner(PHLWINDOW window){
-    auto pid=window->getPID();if(pid<=1)return nullptr;
+    auto pid=Compat::pid(window);if(pid<=1)return nullptr;
     if(auto* app=find(pid))return app;
     auto self=stat(pid);if(!self.second)return nullptr;
     auto parent=self.first;
@@ -54,31 +54,26 @@ inline App* owner(PHLWINDOW window){
     track(pid,self.second,marker->second=="current"?"":marker->second);
     return find(pid);
 }
-inline std::string spec(const PHLWORKSPACE& w){
-    if(w->m_isSpecialWorkspace)return w->m_name;
-    if(w->m_id>0)return std::to_string(w->m_id);
-    return "name:"+w->m_name;
-}
 inline void place(Desktop::Rule::CWindowRuleApplicator* rules){
     PHLWINDOW window;
     for(auto& w:Desktop::windowState()->windows())if(w->m_ruleApplicator.get()==rules){window=w;break;}
-    if(!window || !window->m_isMapped || !window->m_firstMap)return;
-    auto parent=window->parent();
+    if(!window || !Compat::mapped(window) || !Compat::firstMap(window))return;
+    auto parent=Compat::parent(window);
     auto* app=owner(window);
     App* parentApp=parent?owner(parent):nullptr;
     const bool caused=parent && Popups::recentWindow(parent);
     if(!app && !parentApp && !caused)return;
-    auto pid=window->getPID();
+    auto pid=Compat::pid(window);
     PHLWORKSPACE target;
     if(parent)target=parent->m_workspace;
     else for(auto& w:Desktop::windowState()->windows()|std::views::reverse)
-        if(w!=window && w->m_isMapped && !w->isHidden() && w->getPID()==pid && !w->isX11OverrideRedirect() && w->m_workspace){target=w->m_workspace;break;}
-    if(target && target->inert())target.reset();
+        if(w!=window && Compat::mapped(w) && !w->isHidden() && Compat::pid(w)==pid && !Compat::overrideRedirect(w) && w->m_workspace){target=w->m_workspace;break;}
+    if(target && Compat::inert(target))target.reset();
     // The user is working in this app here: it opens new windows normally.
     auto focused=Desktop::focusState()->window();
-    if(focused && (focused->getPID()==pid || (parent && focused->getPID()==parent->getPID())) && (!target || focused->m_workspace==target))return;
+    if(focused && (Compat::pid(focused)==pid || (parent && Compat::pid(focused)==Compat::pid(parent))) && (!target || focused->m_workspace==target))return;
     if(!target && !app && !parentApp)return;
-    auto workspace=target?spec(target):app?app->workspace:parentApp->workspace;
+    auto workspace=target?Compat::spec(target):app?app->workspace:parentApp->workspace;
     if(!workspace.empty() && validWorkspace(workspace))rules->static_.workspace=workspace+" silent";
     rules->static_.noInitialFocus=true;
     rules->focusOnActivate().set(false,Desktop::Types::PRIORITY_WINDOW_RULE);
@@ -97,7 +92,7 @@ inline void settle(PHLWINDOW window){
     auto it=std::ranges::find_if(mapping,[&](const PHLWINDOWREF& w){return w.lock()==window;});
     if(it==mapping.end())return;
     mapping.erase(it);
-    if(!window->m_isMapped || !window->m_isFloating || window->isX11OverrideRedirect() || !window->m_workspace)return;
+    if(!Compat::mapped(window) || !Compat::floating(window) || Compat::overrideRedirect(window) || !window->m_workspace)return;
     auto monitor=window->m_workspace->m_monitor.lock();if(!monitor)return;
     auto size=window->size(Desktop::View::IGeometric::GEOMETRIC_GOAL);
     CBox box{window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL),size};
@@ -105,7 +100,7 @@ inline void settle(PHLWINDOW window){
     auto target=window->layoutTarget();if(!target)return;
     auto center=monitor->logicalBox().middle();
     if(auto space=target->space())center=space->workArea(true).middle();
-    if(auto parent=window->parent(); parent && parent->m_workspace==window->m_workspace){
+    if(auto parent=Compat::parent(window); parent && parent->m_workspace==window->m_workspace){
         CBox parentBox{parent->position(Desktop::View::IGeometric::GEOMETRIC_GOAL),parent->size(Desktop::View::IGeometric::GEOMETRIC_GOAL)};
         if(!parentBox.intersection(monitor->logicalBox()).empty())center=parentBox.middle();
     }

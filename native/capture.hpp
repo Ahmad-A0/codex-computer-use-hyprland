@@ -9,7 +9,7 @@ inline void release(uint64_t token){
     auto window=it->second.window.lock();leases.erase(it);
     if(!window)return;
     for(auto& [_,lease]:leases)if(lease.window.lock()==window)return;
-    window->setSuspended(window->isHidden() || !window->m_workspace || !window->m_workspace->m_visible);
+    window->setSuspended(window->isHidden() || !window->m_workspace || !Compat::visible(window->m_workspace));
 }
 // Hyprland's toplevel capture (ext-image-copy-capture) copies a window only when
 // its own monitor commits and the window overlaps that monitor; otherwise the
@@ -47,8 +47,8 @@ inline std::string refresh(PHLWINDOW window){
         wl_client_flush(root->client());
     };
     pulse(window->wlSurface()->resource());
-    if(window->m_popupHead)window->m_popupHead->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
-        if(popup->m_mapped && popup->wlSurface())pulse(popup->wlSurface()->resource());
+    if(auto head=Compat::popupHead(window))head->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
+        if(Compat::mapped(popup) && popup->wlSurface())pulse(popup->wlSurface()->resource());
     },nullptr);
     return "{\"ok\":true,\"callbacks\":"+std::to_string(callbacks)+"}";
 }
@@ -76,26 +76,44 @@ inline SP<Render::IFramebuffer> render(SP<Desktop::View::CPopup> popup,PHLMONITO
     auto fb=renderer->createFB("codex popup capture");
     if(!fb->alloc(monitor->m_pixelSize.x,monitor->m_pixelSize.y,DRM_FORMAT_ABGR8888))return nullptr;
     fb->setImageDescription(monitor->workBufferImageDescription());
+#if CODEX_HYPRLAND_RENDER_CONTEXT
+    // As makeSnapshotFB: not while the renderer is drawing, and an abandoned
+    // render is aborted.
+    auto& ctx=renderer->context();
+    if(ctx.active() || !renderer->beginFullFakeRender(monitor,damage,fb))return nullptr;
+    bool finished=false;
+    const Hyprutils::Utils::CScopeGuard abort([&]{if(!finished)renderer->abortRender();});
+    ctx.m_renderingSnapshot=true;
+    renderer->draw(ctx,CClearPassElement::SClearData{CHyprColor(0,0,0,0)});
+#else
     if(!renderer->beginFullFakeRender(monitor,damage,fb))return nullptr;
     renderer->m_bRenderingSnapshot=true;
     renderer->draw(CClearPassElement::SClearData{CHyprColor(0,0,0,0)});
+#endif
     CSurfacePassElement::SRenderData data;
     data.pos=popup->coordsGlobal();data.alpha=1.F;data.dontRound=true;data.pMonitor=monitor;data.squishOversized=false;data.popup=true;data.blur=false;
     popup->wlSurface()->resource()->breadthfirst([&](SP<CWLSurfaceResource> surface,const Vector2D& offset,void*){
         if(!surface->m_current.texture || surface->m_current.size.x<1 || surface->m_current.size.y<1)return;
         data.localPos=offset;data.texture=surface->m_current.texture;data.surface=surface;data.mainSurface=false;
+#if CODEX_HYPRLAND_RENDER_CONTEXT
+        Render::IHyprRenderer::addPassElement(ctx,makeUnique<CSurfacePassElement>(data));data.surfaceCounter++;
+    },nullptr);
+    finished=true;
+    renderer->endRender();
+#else
         renderer->m_renderPass.add(makeUnique<CSurfacePassElement>(data));data.surfaceCounter++;
     },nullptr);
     renderer->endRender();
     renderer->m_bRenderingSnapshot=false;
+#endif
     return fb;
 }
 // Mapped popup geometry relative to the window, without rendering.
 inline std::string list(PHLWINDOW window){
     Json result(json_object_new_object(),json_object_put);json_object_object_add(result.get(),"ok",json_object_new_boolean(true));auto items=json_object_new_array();json_object_object_add(result.get(),"popups",items);
     auto origin=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);int count=0;
-    if(window->m_popupHead)window->m_popupHead->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
-        if(!popup->m_mapped || !popup->wlSurface() || !popup->wlSurface()->resource() || ++count>64)return;
+    if(auto head=Compat::popupHead(window))head->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
+        if(!Compat::mapped(popup) || !popup->wlSurface() || !popup->wlSurface()->resource() || ++count>64)return;
         auto item=json_object_new_object();auto number=[&](const char* key,double value){json_object_object_add(item,key,json_object_new_double(value));};
         auto position=popup->coordsGlobal();
         number("x",position.x-origin.x);number("y",position.y-origin.y);number("w",popup->size().x);number("h",popup->size().y);
@@ -110,8 +128,8 @@ inline std::string popups(PHLWINDOW window,json_object* request){
     struct stat st{};require(file.fd>=0 && fstat(file.fd,&st)==0 && S_ISREG(st.st_mode) && st.st_uid==getuid() && !(st.st_mode&077),"Invalid popup capture file");
     Json result(json_object_new_object(),json_object_put);json_object_object_add(result.get(),"ok",json_object_new_boolean(true));auto list=json_object_new_array();json_object_object_add(result.get(),"popups",list);
     size_t offset=0;int count=0;
-    window->m_popupHead->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
-        if(!popup->m_mapped || !popup->wlSurface() || !popup->wlSurface()->resource())return;
+    if(auto head=Compat::popupHead(window))head->breadthfirst([&](SP<Desktop::View::CPopup> popup,void*){
+        if(!Compat::mapped(popup) || !popup->wlSurface() || !popup->wlSurface()->resource())return;
         require(++count<=16,"Too many popup surfaces");auto monitor=popup->getMonitor();require(bool(monitor),"Popup has no monitor");
         auto fb=render(popup,monitor);require(bool(fb),"Cannot render popup surface");
         auto buffer=makeShared<MemoryBuffer>(fb->m_size);require(fb->readPixels(CHLBufferReference(buffer)),"Cannot read popup pixels");

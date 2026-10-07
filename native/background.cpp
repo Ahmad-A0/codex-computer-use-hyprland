@@ -3,7 +3,25 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/state/ViewState.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+// Hyprland's development branch reports the last release's version; its API
+// differences are detected by the headers they introduced (compat.hpp).
+#if __has_include(<hyprland/src/desktop/view/window/Window.hpp>)
+#define CODEX_HYPRLAND_WINDOW_BACKENDS 1
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#else
 #include <hyprland/src/desktop/view/Window.hpp>
+#endif
+#if __has_include(<hyprland/src/workspace/HLWorkspace.hpp>)
+#define CODEX_HYPRLAND_WORKSPACE_STATE 1
+#include <hyprland/src/workspace/HLWorkspace.hpp>
+#endif
+#if __has_include(<hyprland/src/render/Context.hpp>)
+#define CODEX_HYPRLAND_RENDER_CONTEXT 1
+#endif
+#if __has_include(<hyprland/src/ipc/s1/S1.hpp>)
+#define CODEX_HYPRLAND_IPC_S1 1
+#include <hyprland/src/ipc/s1/S1.hpp>
+#endif
 #include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/SessionLockManager.hpp>
@@ -51,6 +69,7 @@ json_object* field(json_object* j, const char* key) { json_object* v = nullptr; 
 std::string str(json_object* j,const char* key) { auto v=field(j,key); require(json_object_is_type(v,json_type_string),"Expected string"); return json_object_get_string(v); }
 double num(json_object* j,const char* key) { auto v=field(j,key); require(json_object_is_type(v,json_type_double)||json_object_is_type(v,json_type_int),"Expected number"); auto n=json_object_get_double(v); require(std::isfinite(n),"Nonfinite number"); return n; }
 
+#include "compat.hpp"
 #include "clipboard.hpp"
 #include "focus_restore.hpp"
 #include "held.hpp"
@@ -63,7 +82,10 @@ double num(json_object* j,const char* key) { auto v=field(j,key); require(json_o
 #include "placement.hpp"
 
 struct TextKeyboard final : IKeyboard {
-    bool isVirtual() override { return true; }
+    // IKeyboard::isVirtual is const on Hyprland's development branch; the
+    // overload matching the installed headers overrides it.
+    bool isVirtual() { return true; }
+    bool isVirtual() const { return true; }
     SP<Aquamarine::IKeyboard> aq() override { return nullptr; }
     explicit TextKeyboard(const std::string& symbols) {
         auto ctx=xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -216,7 +238,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
     if(op=="probe" || op=="probe_clear" || (previous && previous!=target && previous->client()==seat->client())) Routing::hold(resources,target);
 }
 
-std::string handle(eHyprCtlOutputFormat,std::string request) {
+std::string handle(std::string request) {
     try {
         auto start=request.find('{'); require(start!=std::string::npos && request.size()<131072,"Invalid request envelope");
         Json j(json_tokener_parse(request.c_str()+start),json_object_put); require(bool(j),"Invalid JSON");
@@ -256,10 +278,10 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         require(!(PROTO::data && PROTO::data->dndActive()),"Drag-and-drop active");
         if(op=="activation_begin"){Activation::begin(window);return R"({"ok":true})";}
         if(op=="x11_info") {
-            require(window->m_isX11 && bool(window->m_xwaylandSurface),"Target is not XWayland");
+            auto xid=Compat::xid(window);require(bool(xid),"Target is not XWayland");
             Json reply(json_object_new_object(),json_object_put);
             json_object_object_add(reply.get(),"ok",json_object_new_boolean(true));
-            json_object_object_add(reply.get(),"xid",json_object_new_int64(window->m_xwaylandSurface->m_xID));
+            json_object_object_add(reply.get(),"xid",json_object_new_int64(*xid));
             json_object_object_add(reply.get(),"display",json_object_new_string(getenv("DISPLAY")));
             json_object_object_add(reply.get(),"compositor_pid",json_object_new_int64(getpid()));
             json_object_object_add(reply.get(),"clipboard_empty",json_object_new_boolean(!g_pSeatManager->m_selection.currentSelection));
@@ -270,10 +292,10 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         }
         if(op=="prepare_action"){
             Activation::begin(window);Popups::touch(window);
-            if(!window->m_isX11){auto surface=window->wlSurface()->resource();auto resource=g_pSeatManager->seatResourceForClient(surface->client());require(bool(resource),"Application has no seat");keyboard(window,resource,j.get(),"focus");}
+            if(!Compat::x11(window)){auto surface=window->wlSurface()->resource();auto resource=g_pSeatManager->seatResourceForClient(surface->client());require(bool(resource),"Application has no seat");keyboard(window,resource,j.get(),"focus");}
             return R"({"ok":true})";
         }
-        require(!window->m_isX11 || op=="paste_begin","XWayland requires the targeted X11 helper");
+        require(!Compat::x11(window) || op=="paste_begin","XWayland requires the targeted X11 helper");
         if(op=="click" || op=="key" || op=="text" || op=="move" || op=="scroll" || op=="hold")Popups::touch(window);
         auto main=window->wlSurface()->resource(); require(bool(main),"Target has no surface");
         auto seat=g_pSeatManager->seatResourceForClient(main->client()); require(bool(seat),"Target has no seat");
@@ -299,7 +321,7 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         const auto size=window->size(Desktop::View::IGeometric::GEOMETRIC_GOAL);
         Vector2D pos{num(j.get(),"x"),num(j.get(),"y")};
         auto valid=[&](Vector2D p){ return p.x>=0 && p.y>=0 && p.x<size.x && p.y<size.y; };
-        require(valid(pos) || (!window->m_isX11 && bool(window->m_popupHead->at(window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL)+pos,true))),"Point outside window and its popups");
+        require(valid(pos) || (!Compat::x11(window) && bool(Compat::popupHead(window)->at(window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL)+pos,true))),"Point outside window and its popups");
         Vector2D end=pos;
         if(op=="drag") { end={num(j.get(),"end_x"),num(j.get(),"end_y")}; require(valid(end),"Drag endpoint outside window"); }
         int count=1; uint32_t button=272; double dx=0,dy=0; bool momentum=true;
@@ -317,9 +339,9 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         }
         auto hit=Desktop::viewState()->hitTest();
         auto origin=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);
-        Vector2D local=pos; auto surface=window->m_isX11?main:hit.windowSurfaceAt(origin+pos,window,local); require(bool(surface),"No input surface at point");
+        Vector2D local=pos; auto surface=Compat::x11(window)?main:hit.windowSurfaceAt(origin+pos,window,local); require(bool(surface),"No input surface at point");
         // Drag coordinates remain relative to the initially pressed surface.
-        auto endLocal=window->m_isX11?end:hit.surfaceLocalAt(origin+end,window,surface);
+        auto endLocal=Compat::x11(window)?end:hit.surfaceLocalAt(origin+end,window,surface);
         require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(surface),"Unrelated seat grab active");
         if(op=="point")return R"({"ok":true})";
         ScrollLeave::finish();
@@ -393,7 +415,11 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
 APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     require(std::string(__hyprland_api_get_hash())==__hyprland_api_get_client_hash(),"Hyprland headers do not match running compositor");
-    require(bool(HyprlandAPI::registerHyprCtlCommand(plugin,SHyprCtlCommand{.name="codex-background",.exact=false,.fn=handle})),"Cannot register background command");
+#if CODEX_HYPRLAND_IPC_S1
+    require(bool(HyprlandAPI::registerHyprCtlCommand(plugin,IPC::Socket1::SCommand{.name="codex-background",.match=IPC::Socket1::COMMAND_MATCH_PREFIX,.handler=[](const IPC::Socket1::SRequest& r){return IPC::Socket1::SResponse(handle(r.command));}})),"Cannot register background command");
+#else
+    require(bool(HyprlandAPI::registerHyprCtlCommand(plugin,SHyprCtlCommand{.name="codex-background",.exact=false,.fn=[](eHyprCtlOutputFormat,std::string request){return handle(std::move(request));}})),"Cannot register background command");
+#endif
     Clipboard::setup(plugin);
     Capture::setup();
     Held::setup();
