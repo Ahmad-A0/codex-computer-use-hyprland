@@ -15,6 +15,10 @@ inline void touch(PHLWINDOW window){
     std::erase_if(touched,[&](auto& t){auto w=t.window.lock();return !w || w==window || now()-t.at>=2000;});
     touched.push_back({window,now()});
 }
+inline bool recentWindow(PHLWINDOW window){
+    for(auto& t:touched)if(auto w=t.window.lock())if(w==window && now()-t.at<2000)return true;
+    return false;
+}
 inline bool recent(SP<Desktop::View::CWLSurface> surface){
     for(auto& t:touched)if(auto w=t.window.lock())if(now()-t.at<2000 && w->wlSurface()==surface)return true;
     return false;

@@ -250,11 +250,16 @@ class Backend:
     def window(self, c, active=None):
         wid = positive_id(int(c["address"], 16))
         self.identities.setdefault(wid, (c["pid"], c.get("initialClass", c.get("class"))))
-        return {"id": wid, "pid": c["pid"], "app": c.get("class") or c.get("initialClass") or "unknown",
+        info = {"id": wid, "pid": c["pid"], "app": c.get("class") or c.get("initialClass") or "unknown",
                 "title": c.get("title", ""), "x": c["at"][0], "y": c["at"][1],
                 "width": c["size"][0], "height": c["size"][1],
                 "focused": c["address"] == active, "modal": False,
                 "window_type": "normal"}
+        # Hyprland reuses a closed window's address (the ID) for a later window,
+        # also of the same app (its next dialog); its stable ID tells them apart.
+        if c.get("stableId"):
+            info["stable_id"] = c["stableId"]
+        return info
 
     def list_windows(self, _):
         active = (self.hypr.query("activewindow") or {}).get("address")
@@ -316,6 +321,9 @@ class Backend:
         # PID, so a fresh listWindows() entry binds the new window while a stale
         # binding to the old one is refused.
         claimed = value.get("pid")
+        stable = value.get("stable_id")
+        if stable is not None and client.get("stableId") and stable != client["stableId"]:
+            raise ValueError("Window ID was reused; restart the binding")
         if claimed is not None:
             if claimed != client["pid"]:
                 raise ValueError("Window ID was reused; restart the binding")

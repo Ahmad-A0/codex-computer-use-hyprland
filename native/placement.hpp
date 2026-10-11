@@ -6,7 +6,10 @@
 // window follows the app's other windows, else the launch workspace.
 // Only processes the provider launched (registered by the launcher before it
 // execs the app, or marked in their environment) and their descendants are
-// affected, plus windows parented to such a process's window.
+// affected, plus windows parented to such a process's window, and windows the
+// agent caused in an app the user started: a dialog whose parent it acted on in
+// the last two seconds opens beside that parent, as a macOS sheet does, not on
+// the user's workspace.
 namespace Placement {
 inline constexpr const char* ENV_NAME="CODEX_HYPRLAND_PLACEMENT";
 struct App {pid_t pid;unsigned long long start;std::string workspace;};
@@ -63,7 +66,8 @@ inline void place(Desktop::Rule::CWindowRuleApplicator* rules){
     auto parent=window->parent();
     auto* app=owner(window);
     App* parentApp=parent?owner(parent):nullptr;
-    if(!app && !parentApp)return;
+    const bool caused=parent && Popups::recentWindow(parent);
+    if(!app && !parentApp && !caused)return;
     auto pid=window->getPID();
     PHLWORKSPACE target;
     if(parent)target=parent->m_workspace;
@@ -73,6 +77,7 @@ inline void place(Desktop::Rule::CWindowRuleApplicator* rules){
     // The user is working in this app here: it opens new windows normally.
     auto focused=Desktop::focusState()->window();
     if(focused && (focused->getPID()==pid || (parent && focused->getPID()==parent->getPID())) && (!target || focused->m_workspace==target))return;
+    if(!target && !app && !parentApp)return;
     auto workspace=target?spec(target):app?app->workspace:parentApp->workspace;
     if(!workspace.empty() && validWorkspace(workspace))rules->static_.workspace=workspace+" silent";
     rules->static_.noInitialFocus=true;

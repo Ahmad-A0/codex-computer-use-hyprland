@@ -8,6 +8,7 @@ from __future__ import annotations
 import collections
 import threading
 import time
+from types import SimpleNamespace
 
 
 # Toolkit switches for apps we launch: Chromium/Electron, Qt, and GTK/Firefox.
@@ -116,7 +117,11 @@ class Accessibility:
 
     @staticmethod
     def identity(obj):
-        return f"atspi:{obj.get_process_id()}:{obj.path}"
+        try:
+            pid = obj.get_process_id()
+        except Exception:  # "Process is defunct": the object's window or app is gone.
+            pid = "gone"
+        return f"atspi:{pid}:{obj.path}"
 
     def name(self, obj, role):
         name = obj.get_name() or ""
@@ -220,16 +225,23 @@ class Accessibility:
             app = desktop.get_child_at_index(i)
             if app is None:
                 continue
-            app.clear_cache()
-            if app.get_process_id() != pid:
-                continue
-            for j in range(app.get_child_count()):
-                child = app.get_child_at_index(j)
-                if child is None:
+            try:
+                app.clear_cache()
+                if app.get_process_id() != pid:
                     continue
-                child.clear_cache()
-                if not child.get_state_set().contains(self.api.StateType.DEFUNCT):
-                    children.append(child)
+                count = app.get_child_count()
+            except Exception:  # An application that exited meanwhile.
+                continue
+            for j in range(count):
+                try:
+                    child = app.get_child_at_index(j)
+                    if child is None:
+                        continue
+                    child.clear_cache()
+                    if not child.get_state_set().contains(self.api.StateType.DEFUNCT):
+                        children.append(child)
+                except Exception:  # A window that closed meanwhile.
+                    continue
         return children
 
     @staticmethod
@@ -322,10 +334,17 @@ class Accessibility:
         self.listed = (client["pid"], children)  # reused by popups() in the same snapshot
         if children is None:
             return None
+        # Another window of the app may close at any moment (a menu, a window
+        # that closes when it loses focus): it is no candidate, not an error.
+        def read(frame, get, default=None):
+            try:
+                return get(frame)
+            except Exception:
+                return default
         # Direct application children are toplevels; Qt reports a plain QWidget
         # window as "filler". Menus can be "window" (GTK 3) or "frame" (Chromium).
         # GTK 3's file, colour and font dialogs report chooser roles.
-        frames = [f for f in children if f.get_role_name() in (
+        frames = [f for f in children if read(f, lambda f: f.get_role_name()) in (
             "frame", "window", "dialog", "alert", "filler", "file chooser", "color chooser", "font chooser")]
         cached = self.roots.get(client["address"])
         if cached:
@@ -337,7 +356,7 @@ class Accessibility:
             popups = self.popup_geometry(client)
             if popups:
                 frames = [f for f in frames if not self.popup_match(f, popups, client)] or frames
-        named = [f for f in frames if f.get_name() == client.get("title")]
+        named = [f for f in frames if read(f, lambda f: f.get_name()) == client.get("title")]
         # A lone candidate stands for this window only if the app has no other
         # window; otherwise a dialog could be observed as its main window.
         from . import desktop
@@ -347,16 +366,16 @@ class Accessibility:
         if chosen is None and named:
             sized = []
             for frame in named:
-                rect = frame.get_extents(self.api.CoordType.WINDOW)
-                if (rect.width, rect.height) == tuple(client["size"]):
+                rect = read(frame, lambda f: f.get_extents(self.api.CoordType.WINDOW))
+                if rect is not None and (rect.width, rect.height) == tuple(client["size"]):
                     sized.append(frame)
             if len(sized) == 1:
                 chosen = sized[0]
         if chosen is None and client.get('xwayland'):
             located = []
             for frame in frames:
-                rect = frame.get_extents(self.api.CoordType.SCREEN)
-                if (rect.x, rect.y, rect.width, rect.height) == tuple(client['at'] + client['size']):
+                rect = read(frame, lambda f: f.get_extents(self.api.CoordType.SCREEN))
+                if rect is not None and (rect.x, rect.y, rect.width, rect.height) == tuple(client['at'] + client['size']):
                     located.append(frame)
             if len(located) == 1:
                 chosen = located[0]
@@ -364,9 +383,11 @@ class Accessibility:
             from . import background
             def active_frames():
                 result = []
-                for frame in frames:
-                    frame.clear_cache()
-                    if frame.get_state_set().contains(self.api.StateType.ACTIVE):
+                for frame in list(frames):
+                    states = read(frame, lambda f: (f.clear_cache(), f.get_state_set())[1])
+                    if states is None or states.contains(self.api.StateType.DEFUNCT):
+                        frames.remove(frame)  # Closed during the probe.
+                    elif states.contains(self.api.StateType.ACTIVE):
                         result.append(frame)
                 return result
             with self.probe_context(client):
@@ -430,7 +451,19 @@ class Accessibility:
         limit = 1500
         truncated = False
 
+        from gi.repository import GLib
+
         def walk(obj, depth=0, popup=False, offset=None):
+            # Elements can be destroyed while they are read (a closing window,
+            # menu or dialog): they are gone, not an error.
+            try:
+                return visit(obj, depth, popup, offset)
+            except GLib.Error:
+                if depth == 0:
+                    raise ValueError("AT-SPI window disappeared during observation") from None
+                return None
+
+        def visit(obj, depth, popup, offset):
             nonlocal truncated
             if len(seen) >= limit or depth > 40 or time.monotonic() > deadline:
                 truncated = True
@@ -567,10 +600,14 @@ class Accessibility:
         if found is None:
             raise ValueError("Unknown or stale element; refresh getAXState()")
         obj, role, name = found
-        obj.clear_cache()
-        if (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
-                or obj.get_role_name() != role or self.name(obj, role) != name
-                or obj.get_process_id() != client["pid"]):
+        try:
+            obj.clear_cache()
+            changed = (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
+                       or obj.get_role_name() != role or self.name(obj, role) != name
+                       or obj.get_process_id() != client["pid"])
+        except Exception:  # Destroyed since the observation.
+            changed = True
+        if changed:
             raise ValueError("Element changed; refresh getAXState()")
         # A surviving object may have been reparented into another window.
         expected = self.root(client)
@@ -593,8 +630,9 @@ class Accessibility:
 
     def shown_part(self, client, obj):
         """(rect, part): the element's window extents and the part of it inside
-        the window and every clipping ancestor (None when nothing is shown)."""
-        rect = obj.get_extents(self.api.CoordType.WINDOW)
+        the window and every clipping ancestor (None when nothing is shown).
+        Both are corrected for GTK 3 popovers (subwindow_offset)."""
+        rect = self.window_extents(client, obj)
         if not on_screen(rect):
             return rect, None
         w, h = client["size"]
@@ -605,7 +643,7 @@ class Accessibility:
             if parent is None or parent.get_role_name() == "application":
                 break
             if parent.get_role_name() in CLIP_ROLES:
-                clip = parent.get_extents(self.api.CoordType.WINDOW)
+                clip = self.window_extents(client, parent)
                 if on_screen(clip):
                     x0, y0 = max(x0, clip.x), max(y0, clip.y)
                     x1, y1 = min(x1, clip.x + clip.width), min(y1, clip.y + clip.height)
@@ -679,6 +717,35 @@ class Accessibility:
         if part is None:
             raise ValueError("Element is scrolled out of view or not on screen; scroll it into view and refresh getAXState()")
         return (part[0] + part[2]) / 2, (part[1] + part[3]) / 2
+
+    def window_extents(self, client, obj):
+        """WINDOW extents relative to the toplevel, also inside a GTK 3 popover."""
+        rect = obj.get_extents(self.api.CoordType.WINDOW)
+        dx, dy = self.subwindow_offset(client, obj)
+        if not (dx or dy):
+            return rect
+        return SimpleNamespace(x=rect.x + dx, y=rect.y + dy, width=rect.width, height=rect.height)
+
+    def subwindow_offset(self, client, obj):
+        """Where an element's own window lies in its toplevel.
+
+        GTK 3 reports WINDOW extents of a popover's contents relative to the
+        popover, not to the window it is drawn in, so the Create Folder field
+        of a file chooser seemed to lie over the window's top-left controls.
+        SCREEN extents of the element and of its toplevel share one origin
+        (also where it is a false zero on Wayland): their SCREEN-minus-WINDOW
+        differences give the offset, which is zero for ordinary widgets."""
+        root = self.root(client)
+        if root is None:
+            return 0, 0
+        try:
+            inner, outer = obj.get_extents(self.api.CoordType.SCREEN), obj.get_extents(self.api.CoordType.WINDOW)
+            top, base = root.get_extents(self.api.CoordType.SCREEN), root.get_extents(self.api.CoordType.WINDOW)
+        except Exception:
+            return 0, 0
+        if any(abs(v) >= 1 << 30 for r in (inner, outer, top, base) for v in (r.x, r.y)):
+            return 0, 0  # Toolkits report G_MININT for what they do not draw.
+        return (inner.x - outer.x) - (top.x - base.x), (inner.y - outer.y) - (top.y - base.y)
 
     def primary_action(self, client, ident, button):
         obj = self.resolve(client, ident)
