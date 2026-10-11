@@ -8,6 +8,7 @@ from __future__ import annotations
 import collections
 import threading
 import time
+from types import SimpleNamespace
 
 
 # Toolkit switches for apps we launch: Chromium/Electron, Qt, and GTK/Firefox.
@@ -28,6 +29,78 @@ LABELLED_ROLES = ("menu item", "check menu item", "radio menu item", "text", "en
 # context menu hangs below an object its entry does not list as a child.
 POPUP_EVENT_ROLES = ("popup menu", "menu", "window")
 MENU_ROLES = ("popup menu", "menu")
+# Controls whose numeric AT-SPI value is what they show, as a macOS AXValue is.
+VALUE_ROLES = ("slider", "spin button", "progress bar", "scroll bar", "level bar", "dial", "meter")
+# Ancestors that clip what they contain: an element outside them is not on screen.
+CLIP_ROLES = ("scroll pane", "viewport", "list", "list box", "table", "tree table", "tree",
+              "document web", "document frame", "internal frame")
+# Selectable items whose name is a closed combo box's value.
+CHOICE_ROLES = ("menu item", "list item", "check menu item", "radio menu item", "option", "table cell")
+OBJECT_REPLACEMENT = "\ufffc"
+# Containers whose children belong to the tree only while shown. As on macOS,
+# a closed menu's items appear when it opens; GTK 3 lists every item of a
+# closed menu bar, which in LibreOffice (about 1,300) exhausts the node budget
+# before the document is reached. Containers that manage their descendants
+# and have more children than an observation can list (a spreadsheet's
+# millions of cells) likewise contribute only shown ones; a list's rows
+# scrolled out of view stay, as in any other container.
+SHOWN_CHILDREN_ROLES = ("popup menu", "menu", "combo box")
+# Children an observation reads per element (and elements per observation).
+NODE_BUDGET = 1500
+
+
+def number_text(value):
+    import math
+    if value is None or not math.isfinite(value):
+        return None
+    return str(int(value)) if float(value).is_integer() else f"{value:.6g}"
+
+
+def numeric(value):
+    """A finite number from a setValue string, or None."""
+    import math
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def action_names(obj):
+    """Action names by index; an action the toolkit fails to describe is "".
+    GTK 4 exposes an Action interface on some objects (the label of an
+    insensitive button, Nautilus and GNOME Text Editor widgets) whose actions
+    it counts but cannot name ("No action with index 0"); one such element must
+    not fail the whole observation or hide the others' actions."""
+    names = []
+    try:
+        count = obj.get_n_actions()
+    except Exception:
+        return names
+    for i in range(count):
+        try:
+            names.append(obj.get_action_name(i) or "")
+        except Exception:
+            names.append("")
+    return names
+
+
+def on_screen(rect):
+    """AT-SPI extents that describe a real on-screen box (GTK reports G_MININT
+    coordinates for cells and widgets it is not drawing)."""
+    return rect.width > 0 and rect.height > 0 and rect.x > -(1 << 30) and rect.y > -(1 << 30)
+
+
+class NoBounds(ValueError):
+    """An element without usable extents (yet: Firefox reports none until it repaints)."""
+
+
+class TextNotRetained(RuntimeError):
+    """A text replacement the application ignored; focused if the field took focus."""
+
+    def __init__(self, focused):
+        super().__init__('Application did not retain the replacement value')
+        self.focused = focused
 
 
 def enable_session_accessibility():
@@ -68,6 +141,7 @@ class Accessibility:
         self.lock = threading.RLock()
         self.draining = None
         self.listed = (None, None)
+        self.toolkits = {}
         try:
             self.listener = Atspi.EventListener.new(self.on_event)
             self.listener.register("object:state-changed:showing")
@@ -77,7 +151,11 @@ class Accessibility:
 
     @staticmethod
     def identity(obj):
-        return f"atspi:{obj.get_process_id()}:{obj.path}"
+        try:
+            pid = obj.get_process_id()
+        except Exception:  # "Process is defunct": the object's window or app is gone.
+            pid = "gone"
+        return f"atspi:{pid}:{obj.path}"
 
     def name(self, obj, role):
         name = obj.get_name() or ""
@@ -181,16 +259,23 @@ class Accessibility:
             app = desktop.get_child_at_index(i)
             if app is None:
                 continue
-            app.clear_cache()
-            if app.get_process_id() != pid:
-                continue
-            for j in range(app.get_child_count()):
-                child = app.get_child_at_index(j)
-                if child is None:
+            try:
+                app.clear_cache()
+                if app.get_process_id() != pid:
                     continue
-                child.clear_cache()
-                if not child.get_state_set().contains(self.api.StateType.DEFUNCT):
-                    children.append(child)
+                count = app.get_child_count()
+            except Exception:  # An application that exited meanwhile.
+                continue
+            for j in range(count):
+                try:
+                    child = app.get_child_at_index(j)
+                    if child is None:
+                        continue
+                    child.clear_cache()
+                    if not child.get_state_set().contains(self.api.StateType.DEFUNCT):
+                        children.append(child)
+                except Exception:  # A window that closed meanwhile.
+                    continue
         return children
 
     @staticmethod
@@ -283,10 +368,17 @@ class Accessibility:
         self.listed = (client["pid"], children)  # reused by popups() in the same snapshot
         if children is None:
             return None
+        # Another window of the app may close at any moment (a menu, a window
+        # that closes when it loses focus): it is no candidate, not an error.
+        def read(frame, get, default=None):
+            try:
+                return get(frame)
+            except Exception:
+                return default
         # Direct application children are toplevels; Qt reports a plain QWidget
         # window as "filler". Menus can be "window" (GTK 3) or "frame" (Chromium).
         # GTK 3's file, colour and font dialogs report chooser roles.
-        frames = [f for f in children if f.get_role_name() in (
+        frames = [f for f in children if read(f, lambda f: f.get_role_name()) in (
             "frame", "window", "dialog", "alert", "filler", "file chooser", "color chooser", "font chooser")]
         cached = self.roots.get(client["address"])
         if cached:
@@ -298,7 +390,7 @@ class Accessibility:
             popups = self.popup_geometry(client)
             if popups:
                 frames = [f for f in frames if not self.popup_match(f, popups, client)] or frames
-        named = [f for f in frames if f.get_name() == client.get("title")]
+        named = [f for f in frames if read(f, lambda f: f.get_name()) == client.get("title")]
         # A lone candidate stands for this window only if the app has no other
         # window; otherwise a dialog could be observed as its main window.
         from . import desktop
@@ -308,16 +400,16 @@ class Accessibility:
         if chosen is None and named:
             sized = []
             for frame in named:
-                rect = frame.get_extents(self.api.CoordType.WINDOW)
-                if (rect.width, rect.height) == tuple(client["size"]):
+                rect = read(frame, lambda f: f.get_extents(self.api.CoordType.WINDOW))
+                if rect is not None and (rect.width, rect.height) == tuple(client["size"]):
                     sized.append(frame)
             if len(sized) == 1:
                 chosen = sized[0]
         if chosen is None and client.get('xwayland'):
             located = []
             for frame in frames:
-                rect = frame.get_extents(self.api.CoordType.SCREEN)
-                if (rect.x, rect.y, rect.width, rect.height) == tuple(client['at'] + client['size']):
+                rect = read(frame, lambda f: f.get_extents(self.api.CoordType.SCREEN))
+                if rect is not None and (rect.x, rect.y, rect.width, rect.height) == tuple(client['at'] + client['size']):
                     located.append(frame)
             if len(located) == 1:
                 chosen = located[0]
@@ -325,9 +417,11 @@ class Accessibility:
             from . import background
             def active_frames():
                 result = []
-                for frame in frames:
-                    frame.clear_cache()
-                    if frame.get_state_set().contains(self.api.StateType.ACTIVE):
+                for frame in list(frames):
+                    states = read(frame, lambda f: (f.clear_cache(), f.get_state_set())[1])
+                    if states is None or states.contains(self.api.StateType.DEFUNCT):
+                        frames.remove(frame)  # Closed during the probe.
+                    elif states.contains(self.api.StateType.ACTIVE):
                         result.append(frame)
                 return result
             with self.probe_context(client):
@@ -388,10 +482,22 @@ class Accessibility:
                 popups = self.popups(client, root)
         elements, seen, offsets = {}, set(), {}
         deadline = time.monotonic() + 8
-        limit = 1500
+        limit = NODE_BUDGET
         truncated = False
 
-        def walk(obj, depth=0, popup=False, offset=None):
+        from gi.repository import GLib
+
+        def walk(obj, depth=0, popup=False, offset=None, shown_only=False):
+            # Elements can be destroyed while they are read (a closing window,
+            # menu or dialog): they are gone, not an error.
+            try:
+                return visit(obj, depth, popup, offset, shown_only)
+            except GLib.Error:
+                if depth == 0:
+                    raise ValueError("AT-SPI window disappeared during observation") from None
+                return None
+
+        def visit(obj, depth, popup, offset, shown_only):
             nonlocal truncated
             if len(seen) >= limit or depth > 40 or time.monotonic() > deadline:
                 truncated = True
@@ -399,11 +505,13 @@ class Accessibility:
             ident = self.identity(obj)
             if ident in seen:
                 return None
-            seen.add(ident)
             obj.clear_cache()
             states = obj.get_state_set()
             if states.contains(self.api.StateType.DEFUNCT):
                 return None
+            if shown_only and not states.contains(self.api.StateType.SHOWING):
+                return None  # A closed menu's item or an off-screen cell; not counted against the budget.
+            seen.add(ident)
             role = obj.get_role_name()
             node = {"id": ident, "role": role, "name": self.name(obj, role),
                     "states": [], "actions": [], "children": []}
@@ -417,17 +525,45 @@ class Accessibility:
             # official formatter would then label every control "disabled".
             if "sensitive" in node["states"] and "enabled" not in node["states"]:
                 node["states"].append("enabled")
+            # As on macOS, hidden controls (a hidden widget, a closed menu, an
+            # inactive Qt tab, display:none web content) are not in the tree.
+            # Scrolled-out content stays: toolkits keep it VISIBLE.
+            if depth > 0 and "visible" not in node["states"] and "showing" not in node["states"]:
+                return None
             if obj.is_action():
-                node["actions"] = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
+                node["actions"] = [name for name in action_names(obj) if name]
             if role != "password text" and obj.is_text():
-                node["value"] = self.api.Text.get_text(obj, 0, min(obj.get_character_count(), 4000))
+                # Hypertext marks each embedded child with U+FFFC; it is not content.
+                text = self.api.Text.get_text(obj, 0, min(obj.get_character_count(), 4000))
+                text = text.replace(OBJECT_REPLACEMENT, "")
+                if text.strip() or obj.is_editable_text():
+                    node["value"] = text
+            if not node.get("value") and role in VALUE_ROLES and obj.is_value():
+                value = number_text(obj.get_current_value())
+                if value is not None:
+                    node["value"] = value
+            if not node.get("value") and role == "combo box":
+                choice = self.chosen(obj)
+                if choice:
+                    node["value"] = choice
             elements[ident] = (obj, role, node["name"])
+            count = obj.get_child_count()
+            shown_children = role in SHOWN_CHILDREN_ROLES or (
+                count > NODE_BUDGET and states.contains(self.api.StateType.MANAGES_DESCENDANTS))
             if popup:
                 offsets[ident] = offset
-            for i in range(min(obj.get_child_count(), 1500)):
+            # A GTK 3 notebook lists every page below its tab; as on macOS,
+            # only the current page's content is part of the window.
+            inactive_tab = (role == "page tab" and "selected" not in node["states"]
+                            and states.contains(self.api.StateType.SELECTABLE))
+            for i in range(min(count, NODE_BUDGET)):
                 child = obj.get_child_at_index(i)
+                if child is not None and inactive_tab:
+                    child.clear_cache()
+                    if not child.get_state_set().contains(self.api.StateType.SHOWING):
+                        continue
                 if child is not None:
-                    item = walk(child, depth + 1, popup, offset)
+                    item = walk(child, depth + 1, popup, offset, shown_children)
                     if item is not None:
                         node["children"].append(item)
                 if truncated:
@@ -467,15 +603,50 @@ class Accessibility:
         self.offsets[wid] = offsets
         return tree, "at_spi"
 
+    def chosen(self, combo):
+        """The name of a combo box's selected choice (its macOS AXValue)."""
+        def selected(obj):
+            try:
+                if obj.is_selection() and self.api.Selection.get_n_selected_children(obj) > 0:
+                    child = self.api.Selection.get_selected_child(obj, 0)
+                    if child is not None and child.get_name():
+                        return child.get_name()
+            except Exception:
+                pass
+            return None
+        found = selected(combo)
+        try:
+            for i in range(min(combo.get_child_count(), 8)):
+                if found:
+                    break
+                child = combo.get_child_at_index(i)
+                if child is None:
+                    continue
+                found = selected(child)
+                for j in range(min(child.get_child_count(), 500)):
+                    if found:
+                        break
+                    item = child.get_child_at_index(j)
+                    if (item is not None and item.get_role_name() in CHOICE_ROLES
+                            and item.get_state_set().contains(self.api.StateType.SELECTED)):
+                        found = item.get_name() or None
+        except Exception:
+            pass
+        return found
+
     def resolve(self, client, ident):
         found = self.elements.get(client["address"], {}).get(ident)
         if found is None:
             raise ValueError("Unknown or stale element; refresh getAXState()")
         obj, role, name = found
-        obj.clear_cache()
-        if (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
-                or obj.get_role_name() != role or self.name(obj, role) != name
-                or obj.get_process_id() != client["pid"]):
+        try:
+            obj.clear_cache()
+            changed = (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
+                       or obj.get_role_name() != role or self.name(obj, role) != name
+                       or obj.get_process_id() != client["pid"])
+        except Exception:  # Destroyed since the observation.
+            changed = True
+        if changed:
             raise ValueError("Element changed; refresh getAXState()")
         # A surviving object may have been reparented into another window.
         expected = self.root(client)
@@ -496,19 +667,145 @@ class Accessibility:
             parent = parent.get_parent()
         raise ValueError("Element no longer belongs to the selected window")
 
-    def point(self, client, ident):
+    def shown_part(self, client, obj):
+        """(rect, part): the element's window extents and the part of it inside
+        the window and every clipping ancestor (None when nothing is shown).
+        Both are corrected for GTK 3 popovers (subwindow_offset)."""
+        rect = self.window_extents(client, obj)
+        if not on_screen(rect):
+            return rect, None
+        w, h = client["size"]
+        x0, y0 = max(rect.x, 0), max(rect.y, 0)
+        x1, y1 = min(rect.x + rect.width, w), min(rect.y + rect.height, h)
+        parent = obj.get_parent()
+        for _ in range(64):
+            if parent is None or parent.get_role_name() == "application":
+                break
+            if parent.get_role_name() in CLIP_ROLES:
+                clip = self.window_extents(client, parent)
+                if on_screen(clip):
+                    x0, y0 = max(x0, clip.x), max(y0, clip.y)
+                    x1, y1 = min(x1, clip.x + clip.width), min(y1, clip.y + clip.height)
+            parent = parent.get_parent()
+        return rect, ((x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None)
+
+    def scroll_into_view(self, obj):
+        """Ask the toolkit to scroll an element into view, as macOS
+        AXScrollToVisible does: AT-SPI ScrollTo, else a scroll-to action
+        (GTK 4 list items, also for the label inside one). Returns whether a
+        request was accepted."""
+        try:
+            if obj.is_component() and obj.scroll_to(self.api.ScrollType.ANYWHERE):
+                return True
+        except Exception:
+            pass
+        for _ in range(3):
+            if obj is None or obj.get_role_name() in CLIP_ROLES:
+                break
+            names = action_names(obj) if obj.is_action() else []
+            for index, name in enumerate(names):
+                if name.casefold().replace("-", "").replace("_", "").endswith(("scrollto", "scrolltovisible")):
+                    try:
+                        return bool(obj.do_action(index))
+                    except Exception:
+                        return False
+            obj = obj.get_parent()
+        return False
+
+    def point(self, client, ident, render=None, reveal=True):
+        """Where to click an element: the centre of its part on screen.
+
+        A row scrolled out of its list keeps bounds that lie over other
+        controls (or outside the window); clicking there would act on whatever
+        is drawn there instead. Like macOS, an element not fully on screen is
+        first scrolled into view (when ``reveal`` and the toolkit can do that);
+        one still not on screen is refused, and one without extents raises
+        NoBounds. ``render`` lets a window on a hidden workspace lay out after
+        scrolling."""
         obj = self.resolve(client, ident)
-        rect = obj.get_extents(self.api.CoordType.WINDOW)
-        if rect.width <= 0 or rect.height <= 0:
-            raise ValueError("Element has no usable bounds")
         offsets = self.offsets.get(client["address"], {})
         if ident in offsets:
+            rect = obj.get_extents(self.api.CoordType.WINDOW)
+            if rect.width <= 0 or rect.height <= 0:
+                raise NoBounds("Element has no usable bounds")
             # Popup elements report extents relative to their popup surface.
             if offsets[ident] is None:
                 raise ValueError("This menu element's position is unknown; use its accessibility action or screenshot coordinates")
             x, y, scale = offsets[ident]
             return x + (rect.x + rect.width / 2) / scale, y + (rect.y + rect.height / 2) / scale
-        return rect.x + rect.width / 2, rect.y + rect.height / 2
+        rect, part = self.shown_part(client, obj)
+        whole = part is not None and (part[2] - part[0], part[3] - part[1]) == (rect.width, rect.height)
+        if not whole and reveal and self.scroll_into_view(obj):
+            before = (rect.x, rect.y, rect.width, rect.height)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if render is not None:
+                    render()
+                time.sleep(.05)
+                obj.clear_cache()
+                rect, part = self.shown_part(client, obj)
+                if (rect.x, rect.y, rect.width, rect.height) != before and part is not None:
+                    # One more frame for the toolkit to finish its layout.
+                    if render is not None:
+                        render()
+                    obj.clear_cache()
+                    rect, part = self.shown_part(client, obj)
+                    break
+        # A sliver of a row at a list's edge is often its border, not the row.
+        if part is not None and (part[2] - part[0] < min(rect.width, 8) or part[3] - part[1] < min(rect.height, 8)):
+            part = None
+        if part is None and (rect.width <= 0 or rect.height <= 0):
+            # Firefox reports no extents for page content changed since its
+            # last paint; the caller may let the window render and ask again.
+            raise NoBounds("Element has no usable bounds")
+        if part is None:
+            raise ValueError("Element is scrolled out of view or not on screen; scroll it into view and refresh getAXState()")
+        return (part[0] + part[2]) / 2, (part[1] + part[3]) / 2
+
+    def window_extents(self, client, obj):
+        """WINDOW extents relative to the toplevel, also inside a GTK 3 popover."""
+        rect = obj.get_extents(self.api.CoordType.WINDOW)
+        dx, dy = self.subwindow_offset(client, obj)
+        if not (dx or dy):
+            return rect
+        return SimpleNamespace(x=rect.x + dx, y=rect.y + dy, width=rect.width, height=rect.height)
+
+    def subwindow_offset(self, client, obj):
+        """Where an element's own window lies in its toplevel.
+
+        GTK 3 reports WINDOW extents of a popover's contents relative to the
+        popover, not to the window it is drawn in, so the Create Folder field
+        of a file chooser seemed to lie over the window's top-left controls.
+        SCREEN extents of the element and of its toplevel share one origin
+        (also where it is a false zero on Wayland): their SCREEN-minus-WINDOW
+        differences give the offset, which is zero for ordinary widgets.
+        Only GTK 3 needs it: GTK 4 reports popover content in its toplevel's
+        coordinates, and its SCREEN extents of list items do not share that
+        origin (the offset moved clicks on a Nautilus file or a list row onto
+        another item)."""
+        try:
+            name, major = self.toolkit(client)
+        except Exception:
+            return 0, 0
+        if not (name.startswith("gtk") and major == "3"):
+            return 0, 0
+        root = self.root(client)
+        if root is None:
+            return 0, 0
+        try:
+            inner, outer = obj.get_extents(self.api.CoordType.SCREEN), obj.get_extents(self.api.CoordType.WINDOW)
+            top, base = root.get_extents(self.api.CoordType.SCREEN), root.get_extents(self.api.CoordType.WINDOW)
+        except Exception:
+            return 0, 0
+        if any(abs(v) >= 1 << 30 for r in (inner, outer, top, base) for v in (r.x, r.y)):
+            return 0, 0  # Toolkits report G_MININT for what they do not draw.
+        return (inner.x - outer.x) - (top.x - base.x), (inner.y - outer.y) - (top.y - base.y)
+
+    def drawn(self, obj):
+        """Whether an element is showing, visible and has an on-screen box."""
+        states = obj.get_state_set()
+        return (states.contains(self.api.StateType.SHOWING) and states.contains(self.api.StateType.VISIBLE)
+                and on_screen(obj.get_extents(self.api.CoordType.WINDOW)))
 
     def primary_action(self, client, ident, button):
         obj = self.resolve(client, ident)
@@ -518,13 +815,21 @@ class Accessibility:
             # Click a menu item in an open popup like a user does: Qt's press
             # action triggers the item but leaves its menu open, unlike macOS.
             return None
+        if button == "left" and obj.get_role_name() == "menu" and self.drawn(obj):
+            parent = obj.get_parent()
+            if parent is not None and parent.get_role_name() == "menu bar":
+                # Open a visible menu bar's menu as a user's click does: GTK 3's
+                # click action on a menu bar item (Mousepad, LibreOffice) opens
+                # the bar's first menu instead. A hidden menu bar (Firefox's)
+                # keeps its action.
+                return None
         names = ("click", "press", "dodefault") if button == "left" else ("showcontextmenu", "show context menu", "menu")
         # Chromium exposes link activation as "jump", including offscreen
         # links. It is a primary action, unlike an entry's "activate" action.
         if button == "left" and obj.get_role_name() == "link":
             names = (*names, "jump")
-        actions = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
-        found = [name for name in actions if name.casefold() in names]
+        actions = action_names(obj)
+        found = [name for name in actions if name and name.casefold() in names]
         if len(found) > 1:
             raise ValueError("Ambiguous primary accessibility action")
         return found[0] if found else None
@@ -533,18 +838,18 @@ class Accessibility:
         obj = self.resolve(client, ident)
         if not obj.is_action():
             raise ValueError("Element exposes no accessibility actions")
-        actions = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
+        actions = action_names(obj)
         if name is None:
             names = ("click", "press", "activate", "dodefault") if button == "left" else ("showcontextmenu", "show context menu", "menu")
             found = [i for i, a in enumerate(actions) if a.casefold() in names]
         else:
             found = [i for i, a in enumerate(actions) if a.casefold() == name.casefold()]
         if len(found) != 1:
-            raise ValueError(f"Accessibility action unavailable or ambiguous; exposed actions: {actions}")
+            raise ValueError(f"Accessibility action unavailable or ambiguous; exposed actions: {[a for a in actions if a]}")
         if not obj.do_action(found[0]):
             raise RuntimeError("AT-SPI action returned false; not replayed")
 
-    def select_text(self, client, ident, value, prefix=None, suffix=None, selection_type='text'):
+    def select_text(self, client, ident, value, prefix=None, suffix=None, selection_type='text', render=None):
         obj = self.resolve(client, ident)
         if obj.get_role_name() == 'password text':
             raise ValueError('Text selection by content is unavailable for password fields')
@@ -577,50 +882,236 @@ class Accessibility:
                 ok = obj.add_selection(start, end)
             if not ok:
                 raise RuntimeError('Application refused text selection')
-            selected = self.api.Text.get_selection(obj, 0)
-            if (selected.start_offset, selected.end_offset) != (start, end):
+            def applied():
+                obj.clear_cache()
+                selected = self.api.Text.get_selection(obj, 0)
+                return (selected.start_offset, selected.end_offset) == (start, end)
+            if not self.retained(applied, render=render):
                 raise RuntimeError('Application did not apply the requested selection')
         else:
             for index in reversed(range(obj.get_n_selections())):
                 obj.remove_selection(index)
             offset = start if selection_type == 'cursor_before' else end
-            if not obj.set_caret_offset(offset) or obj.get_caret_offset() != offset:
+            if not obj.set_caret_offset(offset) or not self.retained(
+                    lambda: (obj.clear_cache(), obj.get_caret_offset())[1] == offset, render=render):
                 raise RuntimeError('Application did not apply the requested caret position')
 
-    def set_value(self, client, ident, value):
+    @staticmethod
+    def retained(check, timeout=1.5, render=None):
+        """Whether check() holds within the timeout. Chromium applies values
+        set through AT-SPI asynchronously, and updates its tree only while it
+        renders (``render`` lets a window on a hidden workspace render);
+        Firefox applies them in its content process."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if check():
+                return True
+            if time.monotonic() > deadline:
+                return False
+            if render is not None:
+                render()
+            time.sleep(.05)
+
+    def set_numeric(self, obj, value, render=None):
         import math
+        number = numeric(value)
+        if number is None:
+            raise ValueError('This control requires a numeric value')
+        if not obj.get_minimum_value() <= number <= obj.get_maximum_value():
+            raise ValueError('Value is outside the control range')
+        if not obj.set_current_value(number):
+            raise RuntimeError('Application refused the numeric value')
+        if not self.retained(lambda: (obj.clear_cache(), math.isclose(obj.get_current_value(), number, rel_tol=1e-6, abs_tol=1e-6))[1],
+                             render=render):
+            raise RuntimeError('Application did not retain the numeric value')
+
+    def set_value(self, client, ident, value, render=None):
         obj = self.resolve(client, ident)
+        if obj.get_role_name() == "spin button" and obj.is_value() and numeric(value) is not None:
+            # A spin button's text is only an editor for its value: GTK applies
+            # typed text on activation or focus loss, so replacing the text
+            # would leave the value (Mousepad's tab width) unchanged. Numbers
+            # set the value itself; the text is the fallback.
+            try:
+                self.set_numeric(obj, value, render)
+                return
+            except RuntimeError:
+                if not obj.is_editable_text():
+                    raise
         if obj.is_editable_text():
             if not self.api.EditableText.set_text_contents(obj, value):
                 raise RuntimeError('Application refused the replacement value')
             # Password fields must not be read back or included in diagnostics.
-            if obj.get_role_name() != 'password text' and obj.is_text():
-                actual = self.api.Text.get_text(obj, 0, obj.get_character_count())
-                if actual != value:
-                    raise RuntimeError('Application did not retain the replacement value')
-            return
+            if obj.get_role_name() == 'password text' or not obj.is_text():
+                return
+            shows = lambda: (obj.clear_cache(), self.api.Text.get_text(obj, 0, obj.get_character_count()))[1] == value
+            if self.retained(shows, render=render):
+                return
+            # Firefox web pages ignore the replacement. Focus the field and try
+            # once more; if that fails too, the backend types the value into
+            # the focused field.
+            focused = lambda: (obj.clear_cache(), obj.get_state_set().contains(self.api.StateType.FOCUSED))[1]
+            if not focused() and obj.is_component() and obj.grab_focus():
+                deadline = time.monotonic() + .6
+                while not focused() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                if self.api.EditableText.set_text_contents(obj, value) and self.retained(shows, render=render):
+                    return
+            raise TextNotRetained(focused())
         if obj.is_value():
-            try:
-                numeric = float(value)
-            except ValueError:
-                raise ValueError('This control requires a numeric value') from None
-            if not math.isfinite(numeric) or not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
-                raise ValueError('Value is outside the control range')
-            if not obj.set_current_value(numeric):
-                raise RuntimeError('Application refused the numeric value')
-            if not math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6):
-                raise RuntimeError('Application did not retain the numeric value')
+            self.set_numeric(obj, value, render)
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
 
+    def typed_value(self, client, ident):
+        """Whether setValue must type: editable text without a replaceable
+        value (Chromium exposes contenteditable regions so)."""
+        obj = self.resolve(client, ident)
+        return (not obj.is_editable_text() and not obj.is_value() and obj.is_text()
+                and obj.get_role_name() != 'password text'
+                and obj.get_state_set().contains(self.api.StateType.EDITABLE))
+
+    def select_all(self, client, ident):
+        obj = self.resolve(client, ident)
+        count = obj.get_character_count()
+        ok = obj.set_selection(0, 0, count) if obj.get_n_selections() else obj.add_selection(0, count)
+        if not ok and count:
+            raise RuntimeError('Application refused to select the text to replace; no text typed')
+
+    def verify_text(self, client, ident, value, render=None):
+        obj = self.resolve(client, ident)
+        normal = lambda text: text.replace(OBJECT_REPLACEMENT, "").strip()
+        if not self.retained(lambda: (obj.clear_cache(), normal(self.api.Text.get_text(obj, 0, obj.get_character_count())))[1]
+                             == normal(value), 3, render):
+            raise RuntimeError('The element does not show the typed value')
+
+    def at_point(self, client, x, y):
+        """The deepest accessible element at a window point, or None."""
+        try:
+            obj = self.root(client)
+            for _ in range(32):
+                if obj is None or not obj.is_component():
+                    break
+                child = obj.get_accessible_at_point(int(x), int(y), self.api.CoordType.WINDOW)
+                if child is None or self.identity(child) == self.identity(obj):
+                    break
+                obj = child
+            return obj
+        except Exception:
+            return None
+
+    def scroll_input(self, client, pixels, ident=None, point=None, horizontal=False):
+        """The native scroll that moves the content under the target by
+        ``pixels``: (axis value, extra native fields). Wayland leaves the scale
+        of scroll input to each toolkit: GTK 3 moves min(page^(2/3), page/2)
+        of the scrolled view per ten touchpad pixels (per wheel click on
+        XWayland, whose helper clicks once per 40 units), GTK 4 2.5 pixels per
+        pixel (MAGIC_SCROLL_FACTOR), Chromium twelve pixels per pixel, and Qt
+        three rows or lines per wheel notch (its default wheelScrollLines).
+        Others get touchpad pixels (wheel clicks of 40 on XWayland)."""
+        xwayland = bool(client.get("xwayland"))
+        try:
+            obj = self.resolve(client, ident) if ident is not None else self.at_point(client, *point)
+            if obj is None:
+                return pixels, {}
+            name, major = self.toolkit(client)
+        except Exception:
+            return pixels, {}
+        if (name.startswith("gtk") or name == "gail") and major == "3":
+            page = self.viewport_of(client, obj, horizontal)
+            unit = min(page ** (2 / 3), page / 2)
+            if unit <= 0:
+                return pixels, {}
+            if xwayland:
+                return 40 * max(1, round(pixels / unit)), {}
+            return pixels * 10 / unit, {}
+        if xwayland:
+            return pixels, {}
+        if name.startswith("gtk") and major == "4":
+            return pixels / 2.5, {}
+        if name == "chromium":
+            # Chromium flings touchpad input when a later frame stops it; a
+            # stop in the axis frame scrolls exactly the deltas, at once (a
+            # wheel would animate, which a hidden window does not render).
+            return pixels / 12, {"momentum": False}
+        if name == "qt":
+            pitch = self.row_pitch(obj, horizontal) or (None if horizontal else self.line_pitch(obj))
+            # Whole rows only, never more than were asked for, so nothing is skipped.
+            notches = max(1, int(pixels // pitch)) * 40 if pitch else max(1, round(pixels * 2))
+            return notches / 12, {"source": "wheel", "value120": notches}
+        return pixels, {}
+
+    def line_pitch(self, obj):
+        """Line height of a multi-line text view (Qt's plain text edit
+        scrolls by lines), or None."""
+        try:
+            if not obj.is_text() or not obj.get_state_set().contains(self.api.StateType.MULTI_LINE) \
+                    or not obj.get_character_count():
+                return None
+            height = self.api.Text.get_character_extents(obj, 0, self.api.CoordType.WINDOW).height
+            return height if height > 0 else None
+        except Exception:
+            return None
+
+    def toolkit(self, client):
+        """(toolkit name in lower case, major version) of the window's application."""
+        pid = client["pid"]
+        if pid not in self.toolkits:
+            found = ("", "")
+            desktop = self.api.get_desktop(0)
+            for i in range(desktop.get_child_count()):
+                app = desktop.get_child_at_index(i)
+                if app is not None and app.get_process_id() == pid:
+                    found = ((app.get_toolkit_name() or "").casefold(), (app.get_toolkit_version() or "").split(".")[0])
+                    break
+            if not found[0]:
+                return found  # not registered yet; ask again next time
+            self.toolkits[pid] = found
+        return self.toolkits[pid]
+
+    def row_pitch(self, obj, horizontal=False):
+        """Distance between the rows (columns) of the item view containing obj."""
+        view = obj
+        for _ in range(8):
+            if view is None:
+                return None
+            if view.get_role_name() in ("list", "list box", "table", "tree table", "tree") and \
+                    view.get_state_set().contains(self.api.StateType.MANAGES_DESCENDANTS):
+                break
+            view = view.get_parent()
+        else:
+            return None
+        if view is None:
+            return None
+        starts = set()
+        for i in range(min(view.get_child_count(), 400)):
+            child = view.get_child_at_index(i)
+            if child is None or child.get_role_name() not in ("table cell", "list item", "tree item"):
+                continue
+            if not child.get_state_set().contains(self.api.StateType.SHOWING):
+                continue
+            rect = child.get_extents(self.api.CoordType.WINDOW)
+            if on_screen(rect):
+                starts.add(rect.x if horizontal else rect.y)
+        ordered = sorted(starts)
+        steps = [b - a for a, b in zip(ordered, ordered[1:]) if b > a]
+        return min(steps) if steps else None
+
     def viewport(self, client, ident, horizontal=False):
         """Measure the nearest visible scroll viewport, clipped to the window."""
-        obj = self.resolve(client, ident)
+        return self.viewport_of(client, self.resolve(client, ident), horizontal)
+
+    def viewport_of(self, client, obj, horizontal=False):
+        """Item views that scroll themselves (Qt's, GTK 3's tree view) manage
+        their descendants and are the viewport even without a scroll pane."""
         best = client['size'][0 if horizontal else 1]
         for _ in range(64):
             if obj is None:
                 break
-            if obj.get_role_name() in ('scroll pane', 'viewport', 'document web', 'document frame'):
+            role = obj.get_role_name()
+            if role in ('scroll pane', 'viewport', 'document web', 'document frame') or (
+                    role in ('list', 'list box', 'table', 'tree table', 'tree')
+                    and obj.get_state_set().contains(self.api.StateType.MANAGES_DESCENDANTS)):
                 rect = obj.get_extents(self.api.CoordType.WINDOW)
                 origin = rect.x if horizontal else rect.y
                 length = rect.width if horizontal else rect.height
@@ -640,7 +1131,7 @@ class Accessibility:
             raise ValueError('Editable element has no visible bounds')
         return obj
 
-    def focus_editable(self, client, ident):
+    def focus_editable(self, client, ident, restore=True):
         """Focus an editable element, keeping its caret and selection.
 
         Toolkits such as GTK select all text on focus; typing must not replace it.
@@ -659,7 +1150,7 @@ class Accessibility:
             if time.monotonic() > deadline:
                 raise RuntimeError('Application did not focus the editable element; no text typed')
             time.sleep(.02)
-        if not text:
+        if not text or not restore:
             return
         if selection is not None:
             ok = obj.set_selection(0, selection.start_offset, selection.end_offset) if obj.get_n_selections() else obj.add_selection(selection.start_offset, selection.end_offset)
@@ -689,6 +1180,26 @@ class Accessibility:
         if not self.api.EditableText.insert_text(obj, start, value, len(value.encode('utf-8'))):
             raise RuntimeError('Application refused Unicode text insertion')
         obj.set_caret_offset(start + len(value))
+
+    def focused_text(self, client):
+        """The window's one focused text control, or None."""
+        try:
+            self.snapshot(client)
+            focused = [obj for obj, _, _ in self.elements.get(client['address'], {}).values()
+                       if obj.is_text() and obj.get_state_set().contains(self.api.StateType.FOCUSED)]
+        except Exception:
+            return None
+        return focused[0] if len(focused) == 1 else None
+
+    def ends_with(self, obj, tail):
+        """Whether the text before obj's caret ends with tail (the app has
+        handled the keys that typed it)."""
+        try:
+            obj.clear_cache()
+            caret = obj.get_caret_offset()
+            return caret >= len(tail) and self.api.Text.get_text(obj, caret - len(tail), caret) == tail
+        except Exception:
+            return False
 
     def focused_terminal(self, client):
         """Identify terminal controls without changing the focused element."""

@@ -98,13 +98,43 @@ def settle(client):
             break
 
 
+def caught_up(client, done=None, limit=10):
+    """Let a window handle the input already sent to it.
+
+    A window on a hidden workspace gets no frame callbacks, and a toolkit
+    that redrew waits for one before handling further input, so typed text
+    can queue up there for seconds. Service the window's frame callbacks until
+    done() holds or, without it, until the window stops asking for frames
+    (about a fifth of a second), within limit seconds."""
+    deadline = time.monotonic() + limit
+    lease = send(client, 'refresh_begin')['token']
+    leased = checked = time.monotonic()
+    try:
+        quiet = 0
+        while time.monotonic() < deadline:
+            if done is not None and time.monotonic() - checked >= .1:
+                if done():
+                    return True
+                checked = time.monotonic()
+            if done is None and quiet >= 12:
+                return True
+            if time.monotonic() - leased >= 4:  # leases lapse after five seconds
+                send(client, 'refresh_end', token=lease)
+                lease, leased = send(client, 'refresh_begin')['token'], time.monotonic()
+            quiet = quiet + 1 if not send(client, 'refresh')['callbacks'] else 0
+            time.sleep(.016)
+        return False
+    finally:
+        send(client, 'refresh_end', token=lease)
+
+
 def type_text(client, value):
     # Bound IPC and compositor event-loop work, including Unicode keymap size.
     chunk = ''
     extras = set()
     for char in value:
         new = ord(char) > 126 and char not in extras
-        if len(chunk) >= 512 or (new and len(extras) >= 32):
+        if len(chunk) >= 512 or (new and len(extras) >= 16):  # the module has 19 spare keys
             send(client, 'text', text=chunk)
             with refreshing(client):
                 pass

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import itertools
 import fcntl
 import io
 import math
@@ -15,7 +17,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from .accessibility import Accessibility, LAUNCH_ENVIRONMENT
+from .accessibility import Accessibility, LAUNCH_ENVIRONMENT, NoBounds, TextNotRetained
 from . import background, session, desktop, guards
 
 
@@ -45,6 +47,25 @@ def duration(p):
     if not 0 <= value <= 10000:
         raise ValueError("duration must be between 0 and 10000 milliseconds")
     return value or None
+
+
+# Presses this close (logical pixels) can join into a toolkit multi-click; GTK
+# and Qt use 5, Chromium a few more.
+MULTI_CLICK_DISTANCE = 16
+
+
+@functools.cache
+def multi_click_interval():
+    """Seconds after which toolkits no longer join presses into a multi-click:
+    the desktop's double-click time (GTK, Qt and Chromium default to 400 ms),
+    with a margin for event delivery."""
+    milliseconds = 400
+    with contextlib.suppress(Exception):
+        from gi.repository import Gio
+        schema = 'org.gnome.desktop.peripherals.mouse'
+        if Gio.SettingsSchemaSource.get_default().lookup(schema, True):
+            milliseconds = max(milliseconds, Gio.Settings.new(schema).get_int('double-click'))
+    return milliseconds / 1000 + .1
 
 
 KEY_ALIASES = {"Control_L": "ctrl", "Control_R": "ctrl", "Shift_L": "shift", "Shift_R": "shift",
@@ -85,6 +106,7 @@ class Backend:
         self.holds = {}
         self.hold_epoch = None
         self.dragging = None
+        self.last_press = None  # (address, button, x, y, time) of the last synthetic press
         self.clipboards = {}
 
     def defer_observation(self, params):
@@ -250,11 +272,16 @@ class Backend:
     def window(self, c, active=None):
         wid = positive_id(int(c["address"], 16))
         self.identities.setdefault(wid, (c["pid"], c.get("initialClass", c.get("class"))))
-        return {"id": wid, "pid": c["pid"], "app": c.get("class") or c.get("initialClass") or "unknown",
+        info = {"id": wid, "pid": c["pid"], "app": c.get("class") or c.get("initialClass") or "unknown",
                 "title": c.get("title", ""), "x": c["at"][0], "y": c["at"][1],
                 "width": c["size"][0], "height": c["size"][1],
                 "focused": c["address"] == active, "modal": False,
                 "window_type": "normal"}
+        # Hyprland reuses a closed window's address (the ID) for a later window,
+        # also of the same app (its next dialog); its stable ID tells them apart.
+        if c.get("stableId"):
+            info["stable_id"] = c["stableId"]
+        return info
 
     def list_windows(self, _):
         active = (self.hypr.query("activewindow") or {}).get("address")
@@ -316,6 +343,9 @@ class Backend:
         # PID, so a fresh listWindows() entry binds the new window while a stale
         # binding to the old one is refused.
         claimed = value.get("pid")
+        stable = value.get("stable_id")
+        if stable is not None and client.get("stableId") and stable != client["stableId"]:
+            raise ValueError("Window ID was reused; restart the binding")
         if claimed is not None:
             if claimed != client["pid"]:
                 raise ValueError("Window ID was reused; restart the binding")
@@ -371,12 +401,22 @@ class Backend:
             raise RuntimeError("No active application window")
         return self.target({"id": int(c["address"], 16)})
 
-    def input_target(self, c, x, y):
+    def input_target(self, c, x, y, near=None):
         if c is not None:
             return c, x, y
         # A global coordinate targets its visible topmost application without
         # changing focus. App-bound CUA operations already supply the window.
+        # Only windows on that screen count: a shown workspace, or for a drag
+        # the source window's workspace (the agent's hidden workspace is the
+        # screen it drags on). Windows of other workspaces share coordinates,
+        # and a user's window there must never receive the agent's input.
+        if near is not None:
+            screens = {near.get("workspace", {}).get("id")}
+        else:
+            screens = {m["activeWorkspace"]["id"] for m in self.hypr.query("monitors")}
+            screens |= {m["specialWorkspace"]["id"] for m in self.hypr.query("monitors") if m.get("specialWorkspace", {}).get("id")}
         matches = [v for v in self.clients() if v.get("visible", False)
+                   and (v.get("workspace", {}).get("id") in screens or (near is None and v.get("pinned")))
                    and v["at"][0] <= x < v["at"][0] + v["size"][0]
                    and v["at"][1] <= y < v["at"][1] + v["size"][1]]
         if not matches:
@@ -414,8 +454,7 @@ class Backend:
         if "element_id" in p:
             if not c or "x" in p or "y" in p:
                 raise ValueError("An element requires one window and no coordinates")
-            self.rendered(c)
-            return self.ax.point(c, text(p["element_id"], "element_id", False))
+            return self.element_point(c, text(p["element_id"], "element_id", False), reveal=False)
         if c and "x" not in p and "y" not in p:
             return c["size"][0] / 2, c["size"][1] / 2
         origin = self.capture_origins.get(c["address"], (0, 0)) if c else (0, 0)
@@ -464,6 +503,21 @@ class Backend:
             with background.refreshing(c):
                 pass
 
+    def element_point(self, c, ident, reveal=True):
+        """Where to click an element (see Accessibility.point) once the window
+        has rendered. Firefox reports no extents for page content changed since
+        its last paint, and a window on a hidden workspace paints only when let
+        to: allow it a moment."""
+        deadline = time.monotonic() + 1.5
+        while True:
+            self.rendered(c)
+            try:
+                return self.ax.point(c, ident, render=lambda: self.rendered(c), reveal=reveal)
+            except NoBounds:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(.1)
+
     def get_window_state(self, p):
         c = self.target(p.get("window"))
         include = p.get("include_screenshot", True)
@@ -510,8 +564,7 @@ class Backend:
                 return
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
-            self.rendered(c)
-            x, y = self.ax.point(c, ident)
+            x, y = self.element_point(c, ident)
         else:
             x, y = self.location(p, c)
         self.point(c, x, y)
@@ -520,18 +573,45 @@ class Backend:
             with self.holding(c, names):
                 self.press_button(c, x, y, button, count, hold)
 
+    def separate_press(self, c, x, y, button):
+        """Keep a press from joining the previous one into a multi-click.
+
+        macOS posts every click with its own click count, so two click calls
+        are two single clicks. Linux toolkits count clicks themselves from the
+        time and distance between presses; wait out their interval when this
+        press would otherwise extend the previous press there.
+        """
+        last = self.last_press
+        if last and last[:2] == (c["address"], button) and math.dist(last[2:4], (x, y)) <= MULTI_CLICK_DISTANCE:
+            wait = last[4] + multi_click_interval() - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+
+    def pressed(self, c, x, y, button):
+        self.last_press = (c["address"], button, x, y, time.monotonic())
+
     def press_button(self, c, x, y, button, count, hold):
-        if hold is None or c.get("xwayland"):
-            fields = {} if hold is None else {"duration": round(hold)}
-            background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
-            return
-        # Hold the Wayland button across a real interval without blocking the compositor.
-        for _ in range(count):
-            background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
-            try:
-                time.sleep(hold / 1000)
-            finally:
-                background.send(c, "drag_cancel")
+        self.separate_press(c, x, y, button)
+        try:
+            if hold is None or c.get("xwayland"):
+                fields = {} if hold is None else {"duration": round(hold)}
+                background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
+                if count > 1:
+                    # A hidden window that redraws after the first press (GTK
+                    # selecting a word) holds the later presses until a frame
+                    # callback; by then the toolkit's multi-click timer, which
+                    # runs on the wall clock, may have reset the count.
+                    self.service(c)
+                return
+            # Hold the Wayland button across a real interval without blocking the compositor.
+            for _ in range(count):
+                background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
+                try:
+                    time.sleep(hold / 1000)
+                finally:
+                    background.send(c, "drag_cancel")
+        finally:
+            self.pressed(c, x, y, button)
 
     def scroll(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -560,10 +640,16 @@ class Backend:
         x, y = self.location(p, c)
         self.point(c, x, y)
         dx, dy = directions[p["direction"]]
+        ident = text(p["element_id"], "element_id", False) if c and "element_id" in p else None
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
+            # Each toolkit scales scroll input its own way (GTK 3 would move a
+            # list about four pages for one page of input); send what moves
+            # the content under the target by the requested distance.
+            axis, extra = self.ax.scroll_input(c, pixels, ident, (x, y), dx != 0)
+            axis = min(axis, 8388607)
             with self.holding(c, names):
-                background.send(c, "scroll", x=x, y=y, dx=dx * pixels, dy=dy * pixels)
+                background.send(c, "scroll", x=x, y=y, dx=dx * axis, dy=dy * axis, **extra)
 
     def drag(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -581,17 +667,19 @@ class Backend:
             source, x, y = self.input_target(c, *points[0])
             end_x, end_y = points[1]
             if c is None:
-                destination, end_x, end_y = self.input_target(None, end_x, end_y)
+                destination, end_x, end_y = self.input_target(None, end_x, end_y, near=source)
             elif 0 <= end_x < c["size"][0] and 0 <= end_y < c["size"][1]:
                 destination = source
             else:
-                destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y)
+                destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y, near=source)
             self.trust.guard_client(destination)
             self.trust.guard_auth_client(destination, False)
             with self.holding(source, names):
                 self.drag_between(source, destination, x, y, end_x, end_y)
 
     def drag_between(self, source, destination, x, y, end_x, end_y):
+        self.separate_press(source, x, y, "left")
+        self.pressed(source, x, y, "left")
         if source.get("xwayland") or destination.get("xwayland"):
             if not source.get("xwayland") or not destination.get("xwayland"):
                 raise ValueError("Mixed Wayland/XWayland drag-and-drop requires the compositor data bridge")
@@ -625,7 +713,36 @@ class Backend:
             if c.get("xwayland") and any(ord(char) > 127 for char in value):
                 self.ax.insert_focused_text(c, value)
             else:
-                background.type_text(c, value)
+                self.type_keys(c, value)
+
+    def type_keys(self, c, value):
+        """Type text as key events into a Wayland window's keyboard focus."""
+        if not any(ord(char) > 0xFFFF for char in value) or self.ax.toolkit(c)[0] != "chromium":
+            background.type_text(c, value)
+            return
+        # A Chromium key event carries one UTF-16 unit, so characters beyond
+        # it (emoji) typed as keys are dropped. macOS types any Unicode
+        # string; paste those through a private offer (the desktop clipboard
+        # is untouched) between the typed runs. Chromium lets a page read the
+        # clipboard only within five seconds of input reaching the browser,
+        # and a long text queues up in a hidden window for longer: a paste
+        # behind it reads nothing. So the page first handles the text typed
+        # before, as its focused field shows.
+        from .clipboard import paste
+        field, typed = None, ""
+        for beyond, chars in itertools.groupby(value, lambda char: ord(char) > 0xFFFF):
+            part = "".join(chars)
+            if not beyond:
+                background.type_text(c, part)
+                typed = part
+                continue
+            tail = typed.rsplit("\n", 1)[-1][-24:]  # rich text may show line breaks otherwise
+            if tail:
+                field = field or self.ax.focused_text(c)
+            if not (tail and field is not None
+                    and background.caught_up(c, lambda: self.ax.ends_with(field, tail), limit=15)):
+                background.caught_up(c)
+            paste(c, part, "text")
 
     def press_key(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -709,8 +826,9 @@ class Backend:
                     background.send(source, "button", x=x, y=y, button="left", state="up")
                     return
                 try:
-                    status = background.send(source, "drag_status")
                     target = drag["target"]
+                    self.service(source, target)
+                    status = background.send(source, "drag_status")
                     deadline = time.monotonic() + .75
                     while status["dnd"] and not status["accepted"] and time.monotonic() < deadline:
                         background.send(target, "drag_move", x=drag["x"] - target["at"][0], y=drag["y"] - target["at"][1])
@@ -741,10 +859,13 @@ class Backend:
             self.pointer_free()
             with self.seat(c):
                 source, sx, sy = self.input_target(None, x, y) if not c else self.input_target(c, x - c["at"][0], y - c["at"][1])
+                self.separate_press(source, sx, sy, "left")
+                self.pressed(source, sx, sy, "left")
                 if source.get("xwayland"):
                     background.send(source, "button", x=sx, y=sy, button="left", state="down")
                 else:
                     background.send(source, "drag_begin", x=sx, y=sy, timeout=600000, focus=True)
+                    self.service(source)
                 self.dragging = {"source": source, "target": source, "x": source["at"][0] + sx, "y": source["at"][1] + sy}
             return
         if not self.dragging:
@@ -757,7 +878,7 @@ class Backend:
             else:
                 # An app-started drag-and-drop goes to the Wayland window under the point.
                 try:
-                    target = self.input_target(None, x, y)[0]
+                    target = self.input_target(None, x, y, near=source)[0]
                 except ValueError:
                     target = source
                 if target.get("xwayland"):
@@ -769,7 +890,21 @@ class Backend:
                         self.dragging = None
                         raise RuntimeError("The drag was already released by physical input or its timeout") from None
                     raise
+                self.service(source, target)
             self.dragging.update(x=x, y=y, target=target)
+
+    def service(self, *clients):
+        """Let hidden windows handle the input just sent.
+
+        A window on a hidden workspace gets no frame callbacks, and GTK then
+        holds its input: the motions of separate drag_handle steps merge into
+        the last, a drag-and-drop the app would start on the way never
+        starts, and the last press of a multi-click waits. As an observation
+        does, service the frame callbacks."""
+        for client in {c["address"]: c for c in clients}.values():
+            if not client.get("xwayland") and not self.visible(client):
+                with background.refreshing(client):
+                    pass
 
     def select_text(self, p):
         c = self.target(p.get("window"))
@@ -781,7 +916,7 @@ class Backend:
         if selection not in ("text", "cursor_before", "cursor_after"):
             raise ValueError("Unknown selection type")
         with self.seat(c):
-            self.ax.select_text(c, ident, value, prefix, suffix, selection)
+            self.ax.select_text(c, ident, value, prefix, suffix, selection, render=lambda: self.rendered(c))
 
     def set_value(self, p):
         c = self.target(p.get("window"))
@@ -789,7 +924,42 @@ class Backend:
         value = text(p.get("value"), "value")
         with self.seat(c):
             self.trust.guard_password_field(c, False)
-            self.ax.set_value(c, ident, value)
+            render = lambda: self.rendered(c)
+            if not self.ax.typed_value(c, ident):
+                # Under the app's keyboard focus, so that a field set_value has
+                # to focus (Firefox) takes it as in an active window.
+                with self.app_action(c):
+                    try:
+                        self.ax.set_value(c, ident, value, render=render)
+                        return
+                    except TextNotRetained as ignored:
+                        if not ignored.focused:
+                            raise
+                    # Firefox ignores AT-SPI text replacement in web pages:
+                    # replace the focused field's text as a user does, select
+                    # all and type.
+                    background.send(c, "key", key="a", modifiers=["Control"])
+                    self.type_over(c, value)
+            else:
+                # Rich text (a web page's contenteditable) has text but no
+                # replaceable value: as a user does, focus it, select all of it
+                # and type the value over it.
+                with self.app_action(c):
+                    if c.get("xwayland"):
+                        background.send(c, "hold")
+                    self.ax.focus_editable(c, ident, restore=False)
+                    self.ax.select_all(c, ident)
+                self.type_over(c, value)
+            self.ax.verify_text(c, ident, value, render=render)
+
+    def type_over(self, c, value):
+        """Type value over the focused field's selection."""
+        if not value:
+            background.send(c, "key", key="BackSpace", modifiers=[])
+        elif c.get("xwayland") and any(ord(char) > 127 for char in value):
+            self.ax.insert_focused_text(c, value)
+        else:
+            self.type_keys(c, value)
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))

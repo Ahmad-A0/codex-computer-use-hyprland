@@ -42,7 +42,8 @@ retry pacman -Su --noconfirm --needed --noprogressbar --ignore linux \
   python-gobject at-spi2-core python-pillow \
   base-devel pkgconf json-c libxkbcommon libx11 libxi libxtst libxcomposite libxres libxfixes \
   gtk3 python-pyqt6 chromium foot ttf-dejavu nodejs npm chatgpt-bin \
-  gnome-text-editor mousepad featherpad gnome-calculator firefox xterm wtype
+  gnome-text-editor mousepad featherpad gnome-calculator firefox xterm wtype \
+  nautilus libreoffice-fresh
 retry npm install -g --silent @openai/codex
 if [ "$variant" = git ]; then sh "$here/hyprland-git.sh" "$3"; fi
 

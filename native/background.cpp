@@ -59,6 +59,7 @@ double num(json_object* j,const char* key) { auto v=field(j,key); require(json_o
 #include "activation.hpp"
 #include "capture.hpp"
 #include "drag.hpp"
+#include "scroll_leave.hpp"
 #include "placement.hpp"
 
 struct TextKeyboard final : IKeyboard {
@@ -74,6 +75,13 @@ struct TextKeyboard final : IKeyboard {
         updateKeymapFD();
     }
 };
+// Keys that carry the extra characters of a text batch. Toolkits read the
+// character from the keymap, but Chromium also maps the key code to a physical
+// key and acts on it: evdev KEY_CLOSE closes its window, others are media,
+// search or mail keys, and a code it does not know is dropped. These keys are
+// inert there: F13-F24, the international keys absent from a US keyboard
+// (102nd, Ro, Yen) and the extra keypad keys (comma, equal, parentheses).
+constexpr uint32_t SPARE_KEYS[]={191,192,193,194,195,196,197,198,199,200,201,202,94,97,132,129,125,187,188};
 struct Stroke { uint32_t code, mods; };
 std::optional<Stroke> lookup(xkb_keymap* map,xkb_keysym_t sym) {
     for (auto code=xkb_keymap_min_keycode(map);code<=xkb_keymap_max_keycode(map);++code) {
@@ -86,6 +94,13 @@ std::optional<Stroke> lookup(xkb_keymap* map,xkb_keysym_t sym) {
         }
     }
     return std::nullopt;
+}
+// Key names are X keysym names, as for xdotool and the X11 helper: "Z" is the
+// shifted letter. Case-insensitive matching (which prefers lower case) is only
+// a fallback for names such as "return".
+xkb_keysym_t keysym(const char* name) {
+    auto sym=xkb_keysym_from_name(name,XKB_KEYSYM_NO_FLAGS);
+    return sym!=XKB_KEY_NoSymbol?sym:xkb_keysym_from_name(name,XKB_KEYSYM_CASE_INSENSITIVE);
 }
 std::vector<uint32_t> decode(const std::string& text) {
     std::vector<uint32_t> result;
@@ -120,7 +135,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         auto keys=field(j,"keys");require(json_object_is_type(keys,json_type_array) && json_object_array_length(keys)<=16,"Expected at most 16 held keys");
         for(size_t i=0;i<json_object_array_length(keys);++i) {
             auto* name=json_object_get_string(json_object_array_get_idx(keys,i));require(name,"Expected key name");
-            auto sym=xkb_keysym_from_name(name,XKB_KEYSYM_CASE_INSENSITIVE);require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
+            auto sym=keysym(name);require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
             holding.push_back(sym);
         }
     } else if(op=="text") {
@@ -131,11 +146,14 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
             typing.push_back(sym);
             if(cp>126 && std::find(extras.begin(),extras.end(),cp)==extras.end()) extras.push_back(cp);
         }
-        require(extras.size()<=48,"Too many distinct Unicode scalars in one batch");
+        require(extras.size()<=std::size(SPARE_KEYS),"Too many distinct Unicode scalars in one batch");
     } else if(op=="key") {
-        auto sym=xkb_keysym_from_name(str(j,"key").c_str(),XKB_KEYSYM_CASE_INSENSITIVE);
+        auto sym=keysym(str(j,"key").c_str());
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
         typing.push_back(sym);
+        // A character key absent from the seat's layout and from US is bound
+        // like typed text ("adiaeresis" on a French layout).
+        if(auto cp=xkb_keysym_to_utf32(sym);cp>126)extras.push_back(cp);
         auto mods=field(j,"modifiers"); require(json_object_is_type(mods,json_type_array),"Expected modifiers array");
         for(size_t i=0;i<json_object_array_length(mods);++i) {
             auto* name=json_object_get_string(json_object_array_get_idx(mods,i));require(name,"Expected modifier name");
@@ -163,7 +181,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         std::ostringstream symbols;
         if(!extras.empty()) {
             auto base=makeShared<TextKeyboard>("");
-            for(size_t i=0;i<extras.size();++i) symbols<<"replace key <"<<xkb_keymap_key_get_name(base->m_xkbKeymap,200+i)<<"> { [ U"<<std::hex<<std::setw(4)<<std::setfill('0')<<extras[i]<<std::dec<<" ] }; ";
+            for(size_t i=0;i<extras.size();++i) symbols<<"replace key <"<<xkb_keymap_key_get_name(base->m_xkbKeymap,SPARE_KEYS[i])<<"> { [ U"<<std::hex<<std::setw(4)<<std::setfill('0')<<extras[i]<<std::dec<<" ] }; ";
         }
         auto full=makeShared<TextKeyboard>(symbols.str());
         if(!encode(full)) {
@@ -270,6 +288,7 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             json_object *button=nullptr,*timeout=nullptr;uint32_t code=272,lifetime=15000;
             if(json_object_object_get_ex(j.get(),"button",&button)){std::string b=json_object_get_string(button);require(b=="left"||b=="right"||b=="middle","Invalid button");code=b=="right"?273:b=="middle"?274:272;}
             if(json_object_object_get_ex(j.get(),"timeout",&timeout)){auto ms=num(j.get(),"timeout");require(ms>=1000 && ms<=600000,"Invalid drag timeout");lifetime=ms;}
+            ScrollLeave::finish();
             return Drag::begin(window,seat,point,code,lifetime);
         }
         if(op=="copy_begin"){keyboard(window,seat,j.get(),"focus");return Clipboard::Copy::begin(main);}
@@ -283,9 +302,19 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         require(valid(pos) || (!window->m_isX11 && bool(window->m_popupHead->at(window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL)+pos,true))),"Point outside window and its popups");
         Vector2D end=pos;
         if(op=="drag") { end={num(j.get(),"end_x"),num(j.get(),"end_y")}; require(valid(end),"Drag endpoint outside window"); }
-        int count=1; uint32_t button=272; double dx=0,dy=0;
+        int count=1; uint32_t button=272; double dx=0,dy=0; bool momentum=true;
         if(op=="click") { auto b=str(j.get(),"button"); require(b=="left"||b=="right"||b=="middle","Invalid button"); button=b=="right"?273:b=="middle"?274:272; auto n=num(j.get(),"count"); require(n>=1&&n<=3&&std::floor(n)==n,"Invalid click count"); count=n; }
-        if(op=="scroll") {dx=num(j.get(),"dx");dy=num(j.get(),"dy");require(std::abs(dx)<=8388607&&std::abs(dy)<=8388607,"Scroll out of range");}
+        // Scroll input: touchpad ("finger", exact pixels, the default) or a
+        // wheel turned by value120 (120 per notch, magnitude only). A touchpad
+        // scroll without momentum stops in its axis frame (see below).
+        auto source=WL_POINTER_AXIS_SOURCE_FINGER; int notches=0;
+        if(op=="scroll") {
+            dx=num(j.get(),"dx");dy=num(j.get(),"dy");require(std::abs(dx)<=8388607&&std::abs(dy)<=8388607,"Scroll out of range");
+            json_object *value=nullptr;
+            if(json_object_object_get_ex(j.get(),"source",&value)){std::string s=json_object_get_string(value);require(s=="finger"||s=="wheel","Invalid scroll source");if(s=="wheel")source=WL_POINTER_AXIS_SOURCE_WHEEL;}
+            if(source==WL_POINTER_AXIS_SOURCE_WHEEL){notches=std::lround(num(j.get(),"value120"));require(notches>0&&notches<=8388607,"Invalid value120");}
+            if(json_object_object_get_ex(j.get(),"momentum",&value))momentum=json_object_get_boolean(value);
+        }
         auto hit=Desktop::viewState()->hitTest();
         auto origin=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);
         Vector2D local=pos; auto surface=window->m_isX11?main:hit.windowSurfaceAt(origin+pos,window,local); require(bool(surface),"No input surface at point");
@@ -293,6 +322,8 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         auto endLocal=window->m_isX11?end:hit.surfaceLocalAt(origin+end,window,surface);
         require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(surface),"Unrelated seat grab active");
         if(op=="point")return R"({"ok":true})";
+        ScrollLeave::finish();
+        ScrollLeave::Pending later;
         auto previous=g_pSeatManager->m_state.pointerFocus.lock();
         Vector2D previousLocal;
         if(previous && previous->client()==seat->client()) {
@@ -322,17 +353,34 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
                 p->sendButton(t+17,button,WL_POINTER_BUTTON_STATE_RELEASED);p->sendFrame();
             }
             if(op=="scroll") {
-                p->sendAxisSource(WL_POINTER_AXIS_SOURCE_FINGER);
-                if(dx) p->sendAxis(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL,dx);
-                if(dy) p->sendAxis(t,WL_POINTER_AXIS_VERTICAL_SCROLL,dy);
+                p->sendAxisSource(source);
+                // Without momentum the stop comes first in the axis frame:
+                // Chromium then scrolls the deltas and starts no fling (it
+                // flings when a later frame stops the scroll).
+                bool stopFirst=source==WL_POINTER_AXIS_SOURCE_FINGER && !momentum;
+                if(stopFirst){if(dx)p->sendAxisStop(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL);if(dy)p->sendAxisStop(t,WL_POINTER_AXIS_VERTICAL_SCROLL);}
+                for(auto [axis,delta]:{std::pair{WL_POINTER_AXIS_HORIZONTAL_SCROLL,dx},std::pair{WL_POINTER_AXIS_VERTICAL_SCROLL,dy}}) {
+                    if(!delta) continue;
+                    if(notches) {int n=delta>0?notches:-notches; if(p->version()>=8)p->sendAxisValue120(axis,n); else if(n/120)p->sendAxisDiscrete(axis,n/120);}
+                    p->sendAxis(t,axis,delta);
+                }
                 p->sendFrame();
-                if(dx) p->sendAxisStop(t+1,WL_POINTER_AXIS_HORIZONTAL_SCROLL);
-                if(dy) p->sendAxisStop(t+1,WL_POINTER_AXIS_VERTICAL_SCROLL);
-                p->sendFrame();
+                // The stop carries the scroll's own timestamp: toolkits derive a
+                // kinetic fling from the motion's duration, and one scroll 1 ms
+                // long would fling GTK 4 lists to their end.
+                if(source==WL_POINTER_AXIS_SOURCE_FINGER && !stopFirst){
+                    if(dx) p->sendAxisStop(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+                    if(dy) p->sendAxisStop(t,WL_POINTER_AXIS_VERTICAL_SCROLL);
+                    p->sendFrame();
+                }
+                later.pointers.push_back(p);
+                if(previous && previous->client()==seat->client()) {later.previous=previous;later.previousLocal=previousLocal;}
+                continue;
             }
             if(op!="move") p->sendLeave();
             if(previous && previous->client()==seat->client()) {p->sendEnter(previous,previousLocal);p->sendFrame();}
         }
+        if(!later.pointers.empty())ScrollLeave::schedule(std::move(later));
         return R"({"ok":true})";
     } catch(const std::exception& e) {
         Json reply(json_object_new_object(),json_object_put);
@@ -357,4 +405,4 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE plugin) {
     Placement::setup(plugin);
     return {"codex-background","Window-targeted input without compositor focus or cursor movement","Codex Hyprland provider","0.1.0"};
 }
-APICALL EXPORT void PLUGIN_EXIT() { Placement::clear(); Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Keymap::clear(); Routing::clear(); Clipboard::clear(); }
+APICALL EXPORT void PLUGIN_EXIT() { ScrollLeave::clear(); Placement::clear(); Capture::clear(); Activation::clear(); Popups::clear(); Drag::clear(); Held::clear(); Keymap::clear(); Routing::clear(); Clipboard::clear(); }

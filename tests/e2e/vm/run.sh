@@ -18,7 +18,7 @@
 #                    variant provisions with all host CPUs and spare memory)
 #   E2E_ARTIFACTS    results, logs, versions.json, screenshot (default ./e2e-artifacts)
 #   E2E_ONLY         passed through to the suite
-#   E2E_TIMEOUT      suite time limit in seconds (default 900)
+#   E2E_TIMEOUT      suite time limit in seconds (default 1500)
 # --cache-keys prints ready=<provisioned disk key> and base=<cloud image key>.
 # Keys: release <date>-<hash>, git git-<commit>-<date>-<hash>, where the hash
 # covers the provisioning scripts, cloud image, latest chatgpt-bin and Arch
@@ -227,7 +227,7 @@ mark install
 session ./doctor 2>&1 | tee "$artifacts/doctor.log"
 mark doctor
 set +e
-session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' timeout -k 10 ${E2E_TIMEOUT:-900} ./test --host" 2>&1 | tee "$artifacts/suite.log"
+session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' timeout -k 10 ${E2E_TIMEOUT:-1500} ./test --host" 2>&1 | tee "$artifacts/suite.log"
 suite=${PIPESTATUS[0]}
 set -e
 mark suite
