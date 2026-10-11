@@ -46,7 +46,7 @@ def focus_window(address):
 def parse_combo(value):
     # macOS habits: Command shortcuts (cmd+c, cmd+v) mean Ctrl here, and Option is Alt.
     aliases = {'control': 'ctrl', 'super': 'logo', 'meta': 'logo', 'win': 'logo',
-               'cmd': 'super', 'command': 'ctrl', 'option': 'alt', 'opt': 'alt'}
+               'cmd': 'ctrl', 'command': 'ctrl', 'option': 'alt', 'opt': 'alt'}
     keys = {'enter': 'Return', 'return': 'Return', 'esc': 'Escape', 'escape': 'Escape',
             'tab': 'Tab', 'space': 'space', 'backspace': 'BackSpace', 'delete': 'Delete',
             'del': 'Delete', 'insert': 'Insert', 'home': 'Home', 'end': 'End',
