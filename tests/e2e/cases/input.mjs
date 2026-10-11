@@ -328,15 +328,14 @@ export default function (test) {
     }
   }, { needs: null });
 
-  test('input: KNOWN BUG — Chromium gets every emoji the agent types, however many', async () => {
-    // KNOWN PROVIDER BUG, unresolved. A Chromium key event carries one UTF-16
-    // unit, so characters beyond the Basic Multilingual Plane typed as keys are
-    // dropped; the provider therefore pastes them through a private clipboard
-    // offer (backend.type_text). The first pastes into a Chromium window work,
-    // but a later one inserts nothing: the page's paste event sees empty
-    // clipboard data (its paste log read ["😀","😀",""] in the e2e run). The
-    // user's clipboard no longer leaks there (native/clipboard.hpp). macOS types
-    // any Unicode string, so this must pass.
+  test('input: Chromium gets every emoji the agent types, however many', async () => {
+    // A Chromium key event carries one UTF-16 unit, so characters beyond the
+    // Basic Multilingual Plane typed as keys are dropped; the provider pastes
+    // them through a private clipboard offer instead (backend.type_text).
+    // OPEN, INTERMITTENT: after a long typed backlog (about 1100 characters
+    // still being handled by the page) such a paste once inserted nothing; the
+    // page's paste event saw empty clipboard data (paste log ["😀","😀",""]).
+    // The user's clipboard no longer leaks there (native/clipboard.hpp).
     await ensureKeys();
     const text = 'one 😀 two 🎉 three 🚀 four 🌍 five 😀 six';
     await js(`${clearArea} await kpage.typeText(${JSON.stringify(text)}); await kpage.getAXState({ emit: false });`);
