@@ -179,10 +179,11 @@ const KEY_NAMES = ['z', 'y', 'Z', 'Y', 'at', 'bracketleft', 'backslash', 'asciit
 const KEY_TEXT = 'zyZY@[\\~€ä}';
 const POOL = [...'äöüßÄÖÜẞ€£¥©®±×÷µ¶§°éèêëàçñøåæœðþłžčřğışțαβγδεζηθλμπσφωЖЗИЙ日本語中文한국어😀'];
 /** Long text whose distinct non-ASCII characters exceed one key batch's keymap. */
-function longText({ lines, tabs = true, unicode = true }) {
+function longText({ lines, tabs = true, unicode = true, astral = true }) {
   let text = '';
   for (let i = 0; i < lines; i++) {
-    const extra = unicode ? ` ${POOL[i % POOL.length]}${POOL[(i * 7 + 3) % POOL.length]}` : '';
+    const pick = (n) => (astral || POOL[n] !== '😀' ? POOL[n] : 'Ω');
+    const extra = unicode ? ` ${pick(i % POOL.length)}${pick((i * 7 + 3) % POOL.length)}` : '';
     text += `${String(i).padStart(3, '0')}${tabs ? '\t' : ' '}The quick brown fox, (jumps) over [the] lazy dog #${i * 37 % 101}!${extra}\n`;
   }
   return text;
@@ -314,7 +315,8 @@ export default function (test) {
     if (browser) {
       // Tab moves focus out of a web text area, so the page gets no tabs.
       await ensureKeys();
-      for (const web of [longText({ lines: 40, tabs: false, unicode: false }), longText({ lines: 70, tabs: false })]) {
+      // Characters beyond the BMP in Chromium: see the known-bug test below.
+      for (const web of [longText({ lines: 40, tabs: false, unicode: false }), longText({ lines: 70, tabs: false, astral: false })]) {
         await js(`${clearArea} await kpage.typeText(${JSON.stringify(web)}); await kpage.getAXState({ emit: false });`, { timeout: 120000 });
         await until(() => { const s = keysState(); return (s.n === web.length && s.h === fnv(web)) || s; },
           `Chromium text area (expected ${web.length} characters ending ${JSON.stringify(web.slice(-40))})`, 15000);
@@ -325,6 +327,22 @@ export default function (test) {
         `Chromium key sequence (expected ${JSON.stringify(script.text)})`, 8000);
     }
   }, { needs: null });
+
+  test('input: KNOWN BUG — Chromium gets every emoji the agent types, however many', async () => {
+    // KNOWN PROVIDER BUG, unresolved. A Chromium key event carries one UTF-16
+    // unit, so characters beyond the Basic Multilingual Plane typed as keys are
+    // dropped; the provider therefore pastes them through a private clipboard
+    // offer (backend.type_text). The first pastes into a Chromium window work,
+    // but a later one inserts nothing: the page's paste event sees empty
+    // clipboard data (its paste log read ["😀","😀",""] in the e2e run). The
+    // user's clipboard no longer leaks there (native/clipboard.hpp). macOS types
+    // any Unicode string, so this must pass.
+    await ensureKeys();
+    const text = 'one 😀 two 🎉 three 🚀 four 🌍 five 😀 six';
+    await js(`${clearArea} await kpage.typeText(${JSON.stringify(text)}); await kpage.getAXState({ emit: false });`);
+    await until(() => { const s = keysState(); return (s.n === text.length && s.h === fnv(text)) || s; },
+      `Chromium text area (expected ${JSON.stringify(text)})`, 10000);
+  }, { needs: needsBrowser });
 
   test('input: clicks land on the exact pixel, multi-clicks select words and lines, separate clicks stay single', async () => {
     await ensureGtk();
