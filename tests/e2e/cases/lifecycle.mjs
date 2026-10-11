@@ -329,24 +329,33 @@ export default function (test) {
       const created = await data(`globalThis.lifeSave = await lifeBind("Codex E2E Life Save File");
         const fields = (tree) => lifeIds(tree, ${JSON.stringify(`^(?:${ENTRY}) \\([^)]*settable[^)]*\\)`)});
         const before = fields(await lifeSave.getAXState({ emit: false, disableDiffing: true }));
-        await lifeSave.click(${find('lifeSave', 'toggle button|(?:push )?button', 'Create Folder')});
+        const createFolder = ${find('lifeSave', 'toggle button|(?:push )?button', 'Create Folder')};
+        await lifeSave.click(createFolder);
         const clicked = await lifeSave.getAXState({ emit: false, disableDiffing: true });
         let added = [];
-        await lifeWait(async () => {
+        const opened = () => lifeWait(async () => {
           added = fields(await lifeSave.getAXState({ emit: false, disableDiffing: true })).filter((id) => !before.includes(id));
           return added.length === 1 || "no new folder name field";
-        }, "folder name field in the tree", 5000).catch(() => {});
+        }, "folder name field in the tree", 3000).then(() => true, () => false);
+        const byAction = await opened();
+        // Diagnostic: the same button pressed by the pointer instead.
+        let byPointer = null;
+        if (!byAction) {
+          const w = (await cua.listWindows({ emit: false })).find((w) => w.title === "Codex E2E Life Save File");
+          await cua.computer.click({ window: w, element_id: String(createFolder), duration: 30 });
+          byPointer = await opened();
+        }
         if (added.length === 1) await lifeSave.click(added[0]);
         await lifeSave.typeText("made-by-agent");
         await lifeSave.pressKey("Return");
         const tree = added.length === 1 ? null
           : \`\${clicked}\n\n5 s later:\n\${await lifeSave.getAXState({ emit: false, disableDiffing: true })}\`;
-        ${write('{ field: added.length === 1, tree }')}`, { timeout: 30000 });
+        ${write('{ field: byAction, byPointer, tree }')}`, { timeout: 40000 });
       if (created.tree) {
         writeFileSync(join(evidence, 'chooser-create-folder.txt'), created.tree);
         await shot('lifeSave', 'chooser-create-folder');
       }
-      expect(created.field, 'the folder name field of the Create Folder popover is not in the accessibility tree');
+      expect(created.field, `clicking Create Folder did not show its popover's name field (by the pointer: ${created.byPointer})`);
       await until(() => existsSync(join(saveIn, 'made-by-agent')), 'folder created on disk', 10000);
       await js(`await lifeWait(async () => (await lifeSave.getAXState({ emit: false, disableDiffing: true })).includes("made-by-agent")
           || "the new folder is not shown", "chooser shows the new folder");
