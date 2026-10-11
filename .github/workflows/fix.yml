@@ -3,8 +3,11 @@ name: fix
 # breakage in the end-to-end VM, fixes it, and opens a pull request. The pull
 # request is then verified independently of the agent: a fresh end-to-end run
 # (on released Hyprland, and on Hyprland main for early warnings), a check that
-# existing tests and workflows are untouched, and a second agent's review. The
-# maintainer is mentioned with the outcome; merging stays with them.
+# existing tests and workflows are untouched, and a second agent's review. A fix
+# for a released upstream version that passes every check is merged, tested on
+# main and released without waiting for anyone, so each new Codex/Hyprland
+# release gets a working provider. Early-warning fixes (Hyprland main) and fixes
+# that fail a check wait for the maintainer, who is mentioned with the outcome.
 on:
   workflow_call:
     inputs:
@@ -244,10 +247,56 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
 
-  # Tell the maintainer the outcome: a verified pull request to merge, or a
-  # breakage the agent could not fix.
+  # Users are already on the released upstream version that broke, so a fix
+  # that passed every check ships at once. The merge uses the workflow token,
+  # which triggers no push workflows, so main is tested and released here.
+  merge:
+    needs: [fix, e2e-release, tests-untouched, review]
+    if: >-
+      always() && needs.fix.outputs.pr != '' && (inputs.hyprland || 'release') == 'release' &&
+      needs.e2e-release.result == 'success' && needs.tests-untouched.result == 'success' &&
+      needs.review.outputs.verdict == 'APPROVE'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - id: merge
+        run: |
+          gh pr merge "$PR" --squash --delete-branch
+          echo "sha=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.fix.outputs.pr }}
+
+  e2e-main:
+    needs: merge
+    if: always() && needs.merge.outputs.sha != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: ${{ needs.merge.outputs.sha }}
+      hyprland: release
+    secrets: inherit
+
+  release:
+    needs: [merge, e2e-main]
+    if: always() && needs.e2e-main.result == 'success'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/auto-release.yml
+    with:
+      sha: ${{ needs.merge.outputs.sha }}
+      run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      versions: ${{ needs.e2e-main.outputs.versions }}
+    secrets: inherit
+
+  # Tell the maintainer the outcome: a fix merged and released, a pull request
+  # to look at, or a breakage the agent could not fix.
   notify:
-    needs: [existing, fix, e2e-release, e2e-git, tests-untouched, review]
+    needs: [existing, fix, e2e-release, e2e-git, tests-untouched, review, merge, e2e-main, release]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -270,6 +319,12 @@ jobs:
           if echo "$checks" | grep -q '❌'; then
             headline="$owner this fix needs attention before merging:"
             gh issue comment "$ISSUE" --body "$owner the fix in #$PR did not pass verification. Run: $run"
+          elif [ "$MERGE" = success ] && [ "$E2E_MAIN" = success ] && [ "$RELEASE" = success ]; then
+            headline="Verified, merged and released automatically (${TAG:-no release needed}):"
+          elif [ "$MERGE" = success ]; then
+            headline="$owner verified and merged, but testing or releasing main failed (end-to-end: $E2E_MAIN, release: $RELEASE):"
+          elif [ "$MERGE" = failure ]; then
+            headline="$owner verified, but merging failed; merge by hand (merging publishes a release):"
           else
             headline="$owner verified and ready to merge (merging publishes a release):"
           fi
@@ -288,3 +343,7 @@ jobs:
           E2E_GIT: ${{ needs.e2e-git.result }}
           TESTS: ${{ needs.tests-untouched.result }}
           VERDICT: ${{ needs.review.outputs.verdict }}
+          MERGE: ${{ needs.merge.result }}
+          E2E_MAIN: ${{ needs.e2e-main.result }}
+          RELEASE: ${{ needs.release.result }}
+          TAG: ${{ needs.release.outputs.tag }}

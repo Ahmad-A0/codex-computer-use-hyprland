@@ -3,12 +3,31 @@ name: auto-release
 # pull request) and something users install changed since the last release,
 # publish the next patch release and package it (release.yml). A release
 # published with the workflow token triggers no workflows, so packaging is
-# called directly.
+# called directly. fix.yml calls this after merging a verified fix itself,
+# since its merge (with the workflow token) triggers no push workflows either.
 on:
   workflow_run:
     workflows: [e2e]
     types: [completed]
     branches: [main]
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit on main that passed the end-to-end suite
+        type: string
+        required: true
+      run:
+        description: URL of the passing end-to-end run
+        type: string
+        required: true
+      versions:
+        description: Upstream versions the run tested (JSON), for the release notes
+        type: string
+        required: false
+    outputs:
+      tag:
+        description: The published tag, or empty when nothing users install changed
+        value: ${{ jobs.publish.outputs.tag }}
 concurrency:
   group: auto-release
   cancel-in-progress: false
@@ -16,14 +35,14 @@ permissions:
   contents: write
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    if: inputs.sha != '' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.sha || github.event.workflow_run.head_sha }}
           fetch-depth: 0
       - id: publish
         run: |
@@ -34,8 +53,9 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           [ -z "$tag" ] || echo "Published $tag"
         env:
-          SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN: ${{ github.event.workflow_run.html_url }}
+          SHA: ${{ inputs.sha || github.event.workflow_run.head_sha }}
+          RUN: ${{ inputs.run || github.event.workflow_run.html_url }}
+          VERSIONS: ${{ inputs.versions }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
 

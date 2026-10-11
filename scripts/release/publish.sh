@@ -24,7 +24,8 @@ notes=$(mktemp)
   git log --no-merges --format='- %s' "$range" -- "$@" | grep -v '^- Tested with ' | head -100
   echo
   echo '## Tested with'
-  python3 -c 'import json; t=json.load(open("upstream.json"))["tested"]; v=t.get("versions", {}); print("\n".join(f"- {k} {x}" for k, x in v.items()) or "- (no upstream record yet)")'
+  # VERSIONS (JSON from the end-to-end run) overrides the upstream.json record.
+  python3 -c 'import json, os; v=json.loads(os.environ.get("VERSIONS") or "null") or json.load(open("upstream.json"))["tested"].get("versions", {}); print("\n".join(f"- {k} {x}" for k, x in v.items()) or "- (no upstream record yet)")'
   echo
   echo "End-to-end run: $run"
 } > "$notes"

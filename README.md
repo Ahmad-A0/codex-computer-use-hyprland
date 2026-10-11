@@ -135,11 +135,12 @@ Then remove the package (or the checkout) and `~/.cache/codex-computer-use-hyprl
   tested as soon as they appear (a poller, `scripts/release/poller/`, triggers the
   check; a daily schedule is the fallback). A failure opens an issue and a Claude Code
   agent proposes a fix as a pull request, which is then verified independently: a fresh
-  VM run, a check that existing tests are unchanged, and a second agent's review. When
-  a merged change passes on main, a release is published automatically.
+  VM run, a check that existing tests are unchanged, and a second agent's review. A fix
+  that passes all three is merged, tested on main and released automatically; one that
+  doesn't waits for the maintainer. Any merged change that passes on main is released.
 - A daily job also runs the suite against each new commit of Hyprland's `main`, as an
   early warning before a release ships the change; failures open a `hyprland-main`
-  issue and start the same fix agent.
+  issue and start the same fix agent, whose fixes wait for the maintainer to merge.
 - [docs/DESIGN.md](docs/DESIGN.md) covers the architecture and implementation details;
   [AGENTS.md](AGENTS.md) the rules for automated contributors.
 
