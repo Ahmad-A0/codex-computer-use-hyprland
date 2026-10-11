@@ -230,7 +230,7 @@ export default function (test) {
       const main = await launch('writer', 'codex-e2e-writer', (c) => /LibreOffice Writer|Writer$/.test(c.title));
       await js(`${find('writer', /^paragraph\b/, { timeout: 60000 })};
         await writer.typeText("Quarterly report\\nRevenue grew strongly this year.");
-        const paragraph = ${find('writer', /Revenue grew strongly this year\./, { timeout: 10000 })};
+        ${find('writer', /Revenue grew strongly this year\./, { timeout: 10000 })}; // typed
         // The heading: caret into the first paragraph, then Styles > Heading 1.
         await writer.pressKey("ctrl+Home");
         await writer.click(${find('writer', el('menu', 'Styles'), { timeout: 5000 })});
