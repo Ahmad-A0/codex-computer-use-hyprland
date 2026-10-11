@@ -392,12 +392,22 @@ class Backend:
             raise RuntimeError("No active application window")
         return self.target({"id": int(c["address"], 16)})
 
-    def input_target(self, c, x, y):
+    def input_target(self, c, x, y, near=None):
         if c is not None:
             return c, x, y
         # A global coordinate targets its visible topmost application without
         # changing focus. App-bound CUA operations already supply the window.
+        # Only windows on that screen count: a shown workspace, or for a drag
+        # the source window's workspace (the agent's hidden workspace is the
+        # screen it drags on). Windows of other workspaces share coordinates,
+        # and a user's window there must never receive the agent's input.
+        if near is not None:
+            screens = {near.get("workspace", {}).get("id")}
+        else:
+            screens = {m["activeWorkspace"]["id"] for m in self.hypr.query("monitors")}
+            screens |= {m["specialWorkspace"]["id"] for m in self.hypr.query("monitors") if m.get("specialWorkspace", {}).get("id")}
         matches = [v for v in self.clients() if v.get("visible", False)
+                   and (v.get("workspace", {}).get("id") in screens or (near is None and v.get("pinned")))
                    and v["at"][0] <= x < v["at"][0] + v["size"][0]
                    and v["at"][1] <= y < v["at"][1] + v["size"][1]]
         if not matches:
@@ -630,11 +640,11 @@ class Backend:
             source, x, y = self.input_target(c, *points[0])
             end_x, end_y = points[1]
             if c is None:
-                destination, end_x, end_y = self.input_target(None, end_x, end_y)
+                destination, end_x, end_y = self.input_target(None, end_x, end_y, near=source)
             elif 0 <= end_x < c["size"][0] and 0 <= end_y < c["size"][1]:
                 destination = source
             else:
-                destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y)
+                destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y, near=source)
             self.trust.guard_client(destination)
             self.trust.guard_auth_client(destination, False)
             with self.holding(source, names):
@@ -810,7 +820,7 @@ class Backend:
             else:
                 # An app-started drag-and-drop goes to the Wayland window under the point.
                 try:
-                    target = self.input_target(None, x, y)[0]
+                    target = self.input_target(None, x, y, near=source)[0]
                 except ValueError:
                     target = source
                 if target.get("xwayland"):

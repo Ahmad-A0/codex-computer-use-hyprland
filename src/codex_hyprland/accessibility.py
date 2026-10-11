@@ -625,7 +625,9 @@ class Accessibility:
             if root is None:
                 return None
             app = root.get_application()
-            if app is None or app.get_toolkit_name() != "GTK" or not (app.get_toolkit_version() or "").startswith("3."):
+            # GTK 3 still names itself "GTK+" (or "gail"); GTK 4 says "GTK".
+            if app is None or (app.get_toolkit_name() or "").casefold() not in ("gtk+", "gtk", "gail") \
+                    or not (app.get_toolkit_version() or "").startswith("3."):
                 return None
             path = [root]
             for _ in range(64):

@@ -6,7 +6,7 @@ Usage: input_qt.py STATE_JSON APP_ID"""
 import json
 import sys
 from pathlib import Path
-from PyQt6.QtCore import QPoint, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, QTimer
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QLineEdit, QListWidget, QPlainTextEdit,
                              QVBoxLayout, QWidget)
 
@@ -30,6 +30,21 @@ items.setFixedHeight(8 * items.sizeHintForRow(0) + 8)
 layout.addWidget(line)
 layout.addWidget(items)
 layout.addWidget(document)
+wheels = []  # every wheel event Qt delivers: receiver, phase, angle and pixel deltas
+
+
+class WheelLog(QObject):
+    def eventFilter(self, receiver, event):
+        if event.type() == QEvent.Type.Wheel:
+            wheels.append([receiver.metaObject().className(), event.phase().name,
+                           event.angleDelta().y(), event.pixelDelta().y(), event.angleDelta().x()])
+            del wheels[:-60]
+            dirty()
+        return False
+
+
+wheel_log = WheelLog()
+app.installEventFilter(wheel_log)
 timer = QTimer()
 timer.setSingleShot(True)
 timer.setInterval(20)
@@ -51,7 +66,7 @@ def flush():
         'docSelection': [cursor.selectionStart(), cursor.selectionEnd()] if cursor.hasSelection() else [],
         'v': {'value': bar.value(), 'max': bar.maximum(), 'page': bar.pageStep(), 'step': bar.singleStep()},
         'h': {'value': document.horizontalScrollBar().value()},
-        'listSelection': sorted(items.row(i) for i in items.selectedItems()),
+        'listSelection': sorted(items.row(i) for i in items.selectedItems()), 'wheel': wheels,
         'geometry': {'line': rect(line), 'document': rect(document), 'list': rect(items),
                      'rows': [rect(items.viewport(), items.visualItemRect(items.item(i))) for i in range(items.count())]},
     }

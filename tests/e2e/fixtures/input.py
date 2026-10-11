@@ -184,15 +184,13 @@ class View:
                       'rows': [self.rect(r) for r in self.list.get_children()]})
         # Character positions of a short document (window coordinates of each
         # character's box), for drags and clicks on exact characters.
+        # One more than the characters: the end of the text.
         glyphs = []
         if len(document) <= 400:
-            it = b.get_start_iter()
-            while True:
-                r = self.view.get_iter_location(it)
+            for offset in range(b.get_char_count() + 1):
+                r = self.view.get_iter_location(b.get_iter_at_offset(offset))
                 x, y = self.view.buffer_to_window_coords(Gtk.TextWindowType.WIDGET, r.x, r.y)
                 glyphs.append([*self.at(self.view, x, y), r.width, r.height])
-                if not it.forward_char():
-                    break
         s['glyphs'] = glyphs
 
 

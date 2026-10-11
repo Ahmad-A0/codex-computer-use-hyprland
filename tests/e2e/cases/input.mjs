@@ -21,15 +21,22 @@ const USER = 'Codex E2E User', AGENT = 'Codex E2E User Agent';
 gtkInput('codex-e2e-userapp', 'Codex E2E User App', 'wayland', `"${USER}" "${AGENT}"`);
 const qt = python('PyQt6');
 if (qt) {
-  entry('codex-e2e-qinput', 'Codex E2E Qt Input', `/usr/bin/env QT_QPA_PLATFORM=wayland QT_WAYLAND_DISABLE_WINDOWDECORATION=1 `
-    + `python3 ${join(fixtures, 'input_qt.py')} ${statePath('codex-e2e-qinput')} codex-e2e-qinput`, 'StartupWMClass=codex-e2e-qinput\n');
+  // Qt's Wayland input log goes to qt-input.log.
+  const launcher = join(out, 'bin', 'codex-e2e-qinput');
+  writeFileSync(launcher, '#!/bin/sh\nexport QT_QPA_PLATFORM=wayland QT_WAYLAND_DISABLE_WINDOWDECORATION=1 '
+    + `QT_LOGGING_RULES='qt.qpa.wayland.input*=true;qt.qpa.input*=true'\n`
+    + `exec python3 ${join(fixtures, 'input_qt.py')} ${statePath('codex-e2e-qinput')} codex-e2e-qinput 2>>${join(out, 'qt-input.log')}\n`);
+  chmodSync(launcher, 0o755);
+  entry('codex-e2e-qinput', 'Codex E2E Qt Input', launcher, 'StartupWMClass=codex-e2e-qinput\n');
 }
 const browser = which('chromium', 'google-chrome-stable');
 if (browser) {
   // The same profile as the toolkit tests' browser: a running instance opens
   // this as another window. A browser started here logs to chromium-keys.log.
   const launcher = join(out, 'bin', 'codex-e2e-keys-browser');
-  writeFileSync(launcher, `#!/bin/sh\nexec ${browser} --user-data-dir=${join(out, 'browser')} --no-first-run `
+  // An absolute path, so the provider recognizes the wrapper as Chromium (and passes its accessibility switch).
+  const program = execFileSync('sh', ['-c', `command -v ${browser}`], { encoding: 'utf8' }).trim();
+  writeFileSync(launcher, `#!/bin/sh\nexec ${program} "$@" --user-data-dir=${join(out, 'browser')} --no-first-run `
     + `--no-default-browser-check --ozone-platform=wayland --enable-logging=stderr --app=file://${join(fixtures, 'input.html')} `
     + `2>>${join(out, 'chromium-keys.log')}\n`);
   chmodSync(launcher, 0o755);
@@ -92,7 +99,7 @@ const toWorkspace = (address, workspace) =>
 const byTitle = (title) => clients().find((c) => c.title === title);
 /** The user typing on their keyboard (into whatever has focus). */
 function userTypes(text, delay = 0) {
-  const child = spawn('wtype', ['-d', String(delay), text], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const child = spawn('wtype', [...(delay ? ['-d', String(delay)] : []), text], { stdio: ['ignore', 'ignore', 'pipe'] });
   let error = '';
   child.stderr.on('data', (d) => { error += d; });
   child.done = new Promise((resolve, reject) => child.on('exit', (code) => (code ? reject(new Error(`wtype: ${error}`)) : resolve())));
@@ -459,6 +466,7 @@ export default function (test) {
         await scroll('up', 40);
         const q = results.qt = { page: qtState().v.page, start: qtState().v.value, onePage: await scroll('down', 1) };
         q.back = await scroll('up', 1);
+        q.wheel = qtState().wheel.slice(-12);
         check(q.start === 0 && Math.abs(q.onePage - q.page) <= 1, `Qt: one page moved ${q.onePage} lines, the page is ${q.page} lines`);
         check(q.back === 0, `Qt: scrolling back one page ended at line ${q.back}`);
       }
