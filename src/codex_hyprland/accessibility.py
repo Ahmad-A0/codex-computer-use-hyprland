@@ -778,7 +778,17 @@ class Accessibility:
         of a file chooser seemed to lie over the window's top-left controls.
         SCREEN extents of the element and of its toplevel share one origin
         (also where it is a false zero on Wayland): their SCREEN-minus-WINDOW
-        differences give the offset, which is zero for ordinary widgets."""
+        differences give the offset, which is zero for ordinary widgets.
+        Only GTK 3 needs it: GTK 4 reports popover content in its toplevel's
+        coordinates, and its SCREEN extents of list items do not share that
+        origin (the offset moved clicks on a Nautilus file or a list row onto
+        another item)."""
+        try:
+            name, major = self.toolkit(client)
+        except Exception:
+            return 0, 0
+        if not (name.startswith("gtk") and major == "3"):
+            return 0, 0
         root = self.root(client)
         if root is None:
             return 0, 0
