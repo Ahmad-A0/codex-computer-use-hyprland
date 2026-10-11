@@ -788,7 +788,7 @@ class Backend:
         if selection not in ("text", "cursor_before", "cursor_after"):
             raise ValueError("Unknown selection type")
         with self.seat(c):
-            self.ax.select_text(c, ident, value, prefix, suffix, selection)
+            self.ax.select_text(c, ident, value, prefix, suffix, selection, render=lambda: self.rendered(c))
 
     def set_value(self, p):
         c = self.target(p.get("window"))

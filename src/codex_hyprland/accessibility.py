@@ -714,7 +714,7 @@ class Accessibility:
         if not obj.do_action(found[0]):
             raise RuntimeError("AT-SPI action returned false; not replayed")
 
-    def select_text(self, client, ident, value, prefix=None, suffix=None, selection_type='text'):
+    def select_text(self, client, ident, value, prefix=None, suffix=None, selection_type='text', render=None):
         obj = self.resolve(client, ident)
         if obj.get_role_name() == 'password text':
             raise ValueError('Text selection by content is unavailable for password fields')
@@ -747,14 +747,18 @@ class Accessibility:
                 ok = obj.add_selection(start, end)
             if not ok:
                 raise RuntimeError('Application refused text selection')
-            selected = self.api.Text.get_selection(obj, 0)
-            if (selected.start_offset, selected.end_offset) != (start, end):
+            def applied():
+                obj.clear_cache()
+                selected = self.api.Text.get_selection(obj, 0)
+                return (selected.start_offset, selected.end_offset) == (start, end)
+            if not self.retained(applied, render=render):
                 raise RuntimeError('Application did not apply the requested selection')
         else:
             for index in reversed(range(obj.get_n_selections())):
                 obj.remove_selection(index)
             offset = start if selection_type == 'cursor_before' else end
-            if not obj.set_caret_offset(offset) or obj.get_caret_offset() != offset:
+            if not obj.set_caret_offset(offset) or not self.retained(
+                    lambda: (obj.clear_cache(), obj.get_caret_offset())[1] == offset, render=render):
                 raise RuntimeError('Application did not apply the requested caret position')
 
     @staticmethod
