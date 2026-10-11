@@ -328,7 +328,15 @@ export default function (test) {
       // element in the tree): type the name and press Enter.
       const created = await data(`globalThis.lifeSave = await lifeBind("Codex E2E Life Save File");
         const fields = (tree) => lifeIds(tree, ${JSON.stringify(`^(?:${ENTRY}) \\([^)]*settable[^)]*\\)`)});
-        const before = fields(await lifeSave.getAXState({ emit: false, disableDiffing: true }));
+        // Like a user, wait for the dialog to settle: GTK focuses its Name
+        // field once the folder has loaded, which would close a popover opened
+        // before (popovers close when focus moves outside them).
+        let before;
+        await lifeWait(async () => {
+          const tree = await lifeSave.getAXState({ emit: false, disableDiffing: true });
+          before = fields(tree);
+          return lifeIds(tree, ${JSON.stringify(`^(?:${ENTRY}) \([^)]*focused[^)]*\) Name(?:,|$)`)}).length === 1 || "Name not focused yet";
+        }, "save dialog ready");
         await lifeSave.click(${find('lifeSave', 'toggle button|(?:push )?button', 'Create Folder')});
         let added = [];
         await lifeWait(async () => {
@@ -338,7 +346,9 @@ export default function (test) {
         if (added.length === 1) await lifeSave.click(added[0]);
         await lifeSave.typeText("made-by-agent");
         await lifeSave.pressKey("Return");
-        ${write('{ field: added.length === 1 }')}`, { timeout: 30000 });
+        const tree = added.length === 1 ? null : await lifeSave.getAXState({ emit: false, disableDiffing: true });
+        ${write('{ field: added.length === 1, tree }')}`, { timeout: 30000 });
+      if (created.tree) writeFileSync(join(evidence, 'chooser-create-folder.txt'), created.tree);
       await until(() => existsSync(join(saveIn, 'made-by-agent')), 'folder created on disk', 10000);
       expect(created.field, 'the folder name field of the Create Folder popover is not in the accessibility tree');
       await js(`await lifeWait(async () => (await lifeSave.getAXState({ emit: false, disableDiffing: true })).includes("made-by-agent")
