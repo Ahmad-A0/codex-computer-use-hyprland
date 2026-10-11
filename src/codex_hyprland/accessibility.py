@@ -106,6 +106,7 @@ class Accessibility:
         self.lock = threading.RLock()
         self.draining = None
         self.listed = (None, None)
+        self.toolkits = {}
         try:
             self.listener = Atspi.EventListener.new(self.on_event)
             self.listener.register("object:state-changed:showing")
@@ -757,18 +758,21 @@ class Accessibility:
                 raise RuntimeError('Application did not apply the requested caret position')
 
     @staticmethod
-    def retained(check, timeout=1.5):
+    def retained(check, timeout=1.5, render=None):
         """Whether check() holds within the timeout. Chromium applies values
-        set through AT-SPI asynchronously, after the call returns."""
+        set through AT-SPI asynchronously, and updates its tree only while it
+        renders (``render`` lets a window on a hidden workspace render)."""
         deadline = time.monotonic() + timeout
         while True:
             if check():
                 return True
             if time.monotonic() > deadline:
                 return False
+            if render is not None:
+                render()
             time.sleep(.05)
 
-    def set_numeric(self, obj, value):
+    def set_numeric(self, obj, value, render=None):
         import math
         try:
             numeric = float(value)
@@ -778,10 +782,11 @@ class Accessibility:
             raise ValueError('Value is outside the control range')
         if not obj.set_current_value(numeric):
             raise RuntimeError('Application refused the numeric value')
-        if not self.retained(lambda: math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6)):
+        if not self.retained(lambda: (obj.clear_cache(), math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6))[1],
+                             render=render):
             raise RuntimeError('Application did not retain the numeric value')
 
-    def set_value(self, client, ident, value):
+    def set_value(self, client, ident, value, render=None):
         import math
         obj = self.resolve(client, ident)
         if obj.is_editable_text() and obj.is_value() and obj.get_role_name() == "spin button":
@@ -793,18 +798,19 @@ class Accessibility:
             except ValueError:
                 numeric = math.nan
             if math.isfinite(numeric):
-                self.set_numeric(obj, value)
+                self.set_numeric(obj, value, render)
                 return
         if obj.is_editable_text():
             if not self.api.EditableText.set_text_contents(obj, value):
                 raise RuntimeError('Application refused the replacement value')
             # Password fields must not be read back or included in diagnostics.
             if obj.get_role_name() != 'password text' and obj.is_text():
-                if not self.retained(lambda: self.api.Text.get_text(obj, 0, obj.get_character_count()) == value):
+                if not self.retained(lambda: (obj.clear_cache(), self.api.Text.get_text(obj, 0, obj.get_character_count()))[1] == value,
+                                     render=render):
                     raise RuntimeError('Application did not retain the replacement value')
             return
         if obj.is_value():
-            self.set_numeric(obj, value)
+            self.set_numeric(obj, value, render)
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
 
@@ -823,11 +829,11 @@ class Accessibility:
         if not ok and count:
             raise RuntimeError('Application refused to select the text to replace; no text typed')
 
-    def verify_text(self, client, ident, value):
+    def verify_text(self, client, ident, value, render=None):
         obj = self.resolve(client, ident)
         normal = lambda text: text.replace(OBJECT_REPLACEMENT, "").strip()
         if not self.retained(lambda: (obj.clear_cache(), normal(self.api.Text.get_text(obj, 0, obj.get_character_count())))[1]
-                             == normal(value), 3):
+                             == normal(value), 3, render):
             raise RuntimeError('The element does not show the typed value')
 
     def at_point(self, client, x, y):
@@ -857,8 +863,7 @@ class Accessibility:
             obj = self.resolve(client, ident) if ident is not None else self.at_point(client, *point)
             if obj is None:
                 return pixels, {}
-            name = (obj.get_toolkit_name() or "").casefold()
-            major = (obj.get_toolkit_version() or "").split(".")[0]
+            name, major = self.toolkit(client)
         except Exception:
             return pixels, {}
         if name.startswith("gtk") and major == "3":
@@ -876,6 +881,22 @@ class Accessibility:
             notches = max(1, int(pixels // pitch)) * 40 if pitch else max(1, round(pixels * 2))
             return notches / 12, {"source": "wheel", "value120": notches}
         return pixels, {}
+
+    def toolkit(self, client):
+        """(toolkit name in lower case, major version) of the window's application."""
+        pid = client["pid"]
+        if pid not in self.toolkits:
+            found = ("", "")
+            desktop = self.api.get_desktop(0)
+            for i in range(desktop.get_child_count()):
+                app = desktop.get_child_at_index(i)
+                if app is not None and app.get_process_id() == pid:
+                    found = ((app.get_toolkit_name() or "").casefold(), (app.get_toolkit_version() or "").split(".")[0])
+                    break
+            if not found[0]:
+                return found  # not registered yet; ask again next time
+            self.toolkits[pid] = found
+        return self.toolkits[pid]
 
     def row_pitch(self, obj, horizontal=False):
         """Distance between the rows (columns) of the item view containing obj."""

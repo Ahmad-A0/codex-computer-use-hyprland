@@ -597,21 +597,29 @@ export default function (test) {
         if (r.error === null) await until(() => state(QT).cell[0] === Number(overTrap.slice(8)), `${overTrap} is the current cell`);
         expect(state(QT).trap === 0, `the click on ${overTrap} (out of view) went through to the Trap button: ${JSON.stringify(r)}`);
       }
-      // Rows below the viewport are not on screen; scroll page by page until the target is.
+      // Rows below the viewport are not on screen: scroll page by page until
+      // the target can be clicked (a row cut off at the edge is refused).
       const target = 'Product 30';
-      let listed = null;
-      for (let n = 0; n < 20 && listed === null; n++) {
+      let clicked = null;
+      const attempts = [];
+      for (let n = 0; n < 20 && clicked === null; n++) {
         const tree = await js(`await nodeRepl.write(${full('wqt')});`);
-        listed = find(tree, target);
-        if (listed !== null) break;
+        const id = find(tree, target);
+        if (id !== null) {
+          const r = await run(`const error = await wTry(async () => wqt.click(${id})); await wqt.getAXState({ emit: false });
+            await wResult({ error });`);
+          attempts.push(r.error);
+          if (r.error === null) { clicked = id; break; }
+          expect(/view|visible|scroll/i.test(r.error), `clicking ${target} failed without saying it is out of view: ${r.error}`);
+          expect(state(QT).trap === 0, `the click on ${target} went through to the Trap button`);
+        }
         const [first, last] = await settled(() => state(QT).tableRows, 'table at rest');
         await js(`await wqt.scroll(await e2eFind(wqt, "Prices"), "down", 1); await wqt.getAXState({ emit: false });`);
         await until(() => state(QT).tableRows[0] !== first, 'the table scrolled');
         const [after] = await settled(() => state(QT).tableRows, 'table scrolling settled');
         expect(after > first && after <= last + 1, `a one-page scroll skipped rows: ${first}..${last} -> ${JSON.stringify(state(QT).tableRows)}`);
       }
-      expect(listed !== null, `${target} never appeared: ${JSON.stringify(state(QT))}`);
-      await js(`await wqt.click(${listed}); await wqt.getAXState({ emit: false });`);
+      expect(clicked !== null, `${target} was never clicked: ${JSON.stringify(attempts)} ${JSON.stringify(state(QT))}`);
       await until(() => JSON.stringify(state(QT).cell) === '[30,0]', `${target} is the current cell`);
       expect(state(QT).tab === 0 && state(QT).treeActivated === 'Engineering/Backend/Bob' && state(QT).trap === 0,
         `a click in the table hit something else: ${JSON.stringify(state(QT))}`);
@@ -744,7 +752,7 @@ export default function (test) {
       const viewport = clients().find((c) => c.title.startsWith('Codex E2E Widgets|')).size[1];
       await js(`await wweb.scroll(await e2eFind(wweb, "Codex E2E Widgets", "heading"), "down", 1); await wweb.getAXState({ emit: false });`);
       const moved = (await settledRendering(() => web().y, 'wweb', 'page scrolling settled')) - top;
-      expect(moved > 0 && moved <= viewport, `one page moved the page by ${moved} px; the window is ${viewport} px tall`);
+      expect(moved >= viewport / 2 && moved <= viewport, `one page moved the page by ${moved} px; the window is ${viewport} px tall`);
 
       const r2 = await run(`const t = ${full('wweb')};
         const checkbox = e2eIndex(t, "Far checkbox", "check box"); const button = e2eIndex(t, "Far button", "button");

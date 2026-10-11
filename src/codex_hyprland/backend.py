@@ -797,7 +797,7 @@ class Backend:
         with self.seat(c):
             self.trust.guard_password_field(c, False)
             if not self.ax.typed_value(c, ident):
-                self.ax.set_value(c, ident, value)
+                self.ax.set_value(c, ident, value, render=lambda: self.rendered(c))
                 return
             # Rich text (a web page's contenteditable) has text but no
             # replaceable value: as a user does, focus it, select all of it and
@@ -813,7 +813,7 @@ class Backend:
                 self.ax.insert_focused_text(c, value)
             else:
                 background.type_text(c, value)
-            self.ax.verify_text(c, ident, value)
+            self.ax.verify_text(c, ident, value, render=lambda: self.rendered(c))
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))
