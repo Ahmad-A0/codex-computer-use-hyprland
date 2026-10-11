@@ -596,6 +596,12 @@ class Backend:
             if hold is None or c.get("xwayland"):
                 fields = {} if hold is None else {"duration": round(hold)}
                 background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
+                if count > 1:
+                    # A hidden window that redraws after the first press (GTK
+                    # selecting a word) holds the later presses until a frame
+                    # callback; by then the toolkit's multi-click timer, which
+                    # runs on the wall clock, may have reset the count.
+                    self.service(c)
                 return
             # Hold the Wayland button across a real interval without blocking the compositor.
             for _ in range(count):
@@ -880,12 +886,13 @@ class Backend:
             self.dragging.update(x=x, y=y, target=target)
 
     def service(self, *clients):
-        """Let hidden windows handle a held drag's step before the next one.
+        """Let hidden windows handle the input just sent.
 
         A window on a hidden workspace gets no frame callbacks, and GTK then
         holds its input: the motions of separate drag_handle steps merge into
-        the last, and a drag-and-drop the app would start on the way never
-        starts. As an observation does, service the frame callbacks."""
+        the last, a drag-and-drop the app would start on the way never
+        starts, and the last press of a multi-click waits. As an observation
+        does, service the frame callbacks."""
         for client in {c["address"]: c for c in clients}.values():
             if not client.get("xwayland") and not self.visible(client):
                 with background.refreshing(client):
