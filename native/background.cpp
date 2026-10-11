@@ -81,11 +81,12 @@ double num(json_object* j,const char* key) { auto v=field(j,key); require(json_o
 #include "scroll_leave.hpp"
 #include "placement.hpp"
 
-struct TextKeyboard final : IKeyboard {
-    // IKeyboard::isVirtual is const on Hyprland's development branch; the
-    // overload matching the installed headers overrides it.
-    bool isVirtual() { return true; }
-    bool isVirtual() const { return true; }
+// IKeyboard::isVirtual is const on Hyprland's development branch: the keyboard
+// overrides whichever the installed headers declare, so a further signature
+// change fails to compile instead of silently reporting a physical keyboard.
+template<bool Const,class Base=IKeyboard> struct VirtualKeyboard : Base { bool isVirtual() override { return true; } };
+template<class Base> struct VirtualKeyboard<true,Base> : Base { bool isVirtual() const override { return true; } };
+struct TextKeyboard final : VirtualKeyboard<std::is_same_v<decltype(&IKeyboard::isVirtual),bool (IKeyboard::*)() const>> {
     SP<Aquamarine::IKeyboard> aq() override { return nullptr; }
     explicit TextKeyboard(const std::string& symbols) {
         auto ctx=xkb_context_new(XKB_CONTEXT_NO_FLAGS);

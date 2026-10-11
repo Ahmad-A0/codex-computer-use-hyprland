@@ -78,7 +78,9 @@ inline SP<Render::IFramebuffer> render(SP<Desktop::View::CPopup> popup,PHLMONITO
     fb->setImageDescription(monitor->workBufferImageDescription());
 #if CODEX_HYPRLAND_RENDER_CONTEXT
     // As makeSnapshotFB: not while the renderer is drawing, and an abandoned
-    // render is aborted.
+    // render is aborted. endRender() and abortRender() both end in finishRender(),
+    // which resets the context and with it m_renderingSnapshot
+    // (src/render/Renderer.cpp, src/render/Context.cpp: CRenderContext::reset).
     auto& ctx=renderer->context();
     if(ctx.active() || !renderer->beginFullFakeRender(monitor,damage,fb))return nullptr;
     bool finished=false;

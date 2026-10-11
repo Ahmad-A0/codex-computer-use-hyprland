@@ -7,15 +7,17 @@ namespace Compat {
 #if CODEX_HYPRLAND_WINDOW_BACKENDS
 inline pid_t pid(const PHLWINDOW& w){return w->backend().pid();}
 inline bool mapped(const PHLWINDOW& w){return w->mapped();}
-// Hyprland reads a window's static rules without pre-reading only while it maps.
-inline bool firstMap(const PHLWINDOW&){return true;}
+// Set for the duration of every mapWindow(), as m_firstMap is on releases
+// (src/desktop/view/window/Window.cpp, CWindow::mapWindow).
+inline bool firstMap(const PHLWINDOW& w){return bool(w->m_state & Desktop::View::WINDOW_STATE_FIRST_MAP);}
 inline PHLWINDOW parent(const PHLWINDOW& w){return w->backend().parent();}
 inline bool x11(const PHLWINDOW& w){return w->backend().isX11();}
 inline bool overrideRedirect(const PHLWINDOW& w){return w->backend().traits().overrideRedirect;}
 inline bool floating(const PHLWINDOW& w){return w->isFloating();}
 inline const SP<Desktop::View::CPopup>& popupHead(const PHLWINDOW& w){return w->popupHead();}
 inline bool mapped(const SP<Desktop::View::CPopup>& p){return p->mapped();}
-// An X11 window's backend client ID is its X window ID.
+// An X11 window's backend client ID is its X window ID
+// (src/desktop/view/window/X11Backend.cpp: m_clientID.id=surface->m_xID).
 inline std::optional<uint32_t> xid(const PHLWINDOW& w){if(!x11(w))return std::nullopt;return uint32_t(w->backend().clientID().id);}
 #else
 inline pid_t pid(const PHLWINDOW& w){return w->getPID();}
@@ -31,8 +33,9 @@ inline std::optional<uint32_t> xid(const PHLWINDOW& w){if(!w->m_isX11 || !w->m_x
 #endif
 #if CODEX_HYPRLAND_WORKSPACE_STATE
 inline bool visible(const PHLWORKSPACE& w){return w->visible();}
-// Workspaces no longer outlive their destruction as inert objects.
-inline bool inert(const PHLWORKSPACE&){return false;}
+// Workspaces are no longer marked inert; a referenced workspace stays valid
+// (src/workspace/HLWorkspace.hpp: Workspace::valid).
+inline bool inert(const PHLWORKSPACE& w){return !Workspace::valid(w);}
 // The workspace as a window rule addresses it.
 inline std::string spec(const PHLWORKSPACE& w){
     if(w->type()==Workspace::eWorkspaceType::SPECIAL)return w->addressableName();
