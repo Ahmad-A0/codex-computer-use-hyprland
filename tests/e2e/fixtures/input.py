@@ -56,7 +56,7 @@ def named(widget, name):
 class View:
     def __init__(self, title):
         self.title = title
-        self.s = state['windows'].setdefault(title, {'keys': [], 'pad': [], 'dropped': [], 'active': False})
+        self.s = state['windows'].setdefault(title, {'keys': [], 'pad': [], 'padCount': 0, 'dropped': [], 'active': False})
         window = self.window = Gtk.Window(title=title)
         window.set_wmclass(app_id, app_id)
         window.set_decorated(False)  # no client-side frame: widget = window coordinates
@@ -99,10 +99,12 @@ class View:
         self.pad = named(Gtk.DrawingArea(), 'Input pad')
         self.pad.set_size_request(-1, 110)
         self.pad.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.BUTTON_RELEASE_MASK
-                            | Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK)
+                            | Gdk.EventMask.SCROLL_MASK | Gdk.EventMask.SMOOTH_SCROLL_MASK | Gdk.EventMask.POINTER_MOTION_MASK)
         self.pad.connect('draw', lambda _w, cr: (cr.set_source_rgb(.85, .9, 1), cr.paint()))
         self.pad.connect('button-press-event', self.pressed)
         self.pad.connect('scroll-event', self.scrolled)
+        self.pad.connect('button-release-event', self.released)
+        self.pad.connect('motion-notify-event', self.moved)
         box.pack_start(self.pad, False, False, 0)
         self.scroll = named(Gtk.ScrolledWindow(), 'Input viewport')
         self.view = named(Gtk.TextView(), 'Input document')
@@ -143,20 +145,30 @@ class View:
     def pressed(self, _, event):
         kind = {Gdk.EventType.BUTTON_PRESS: 1, Gdk.EventType._2BUTTON_PRESS: 2,
                 Gdk.EventType._3BUTTON_PRESS: 3}.get(event.type, 0)
-        self.s['pad'].append({'kind': 'press', 'n': kind, 'button': event.button,
-                              'at': self.at(self.pad, event.x, event.y), 'mods': mods(event.state)})
+        return self.log({'kind': 'press', 'n': kind, 'button': event.button,
+                         'at': self.at(self.pad, event.x, event.y), 'mods': mods(event.state)})
+
+    def log(self, entry):
+        """The pad's last 300 events; seq counts them all."""
+        entry['seq'] = self.s['padCount'] = self.s.get('padCount', 0) + 1
+        self.s['pad'] = (self.s['pad'] + [entry])[-300:]
         dirty()
         return True
+
+    def released(self, _, event):
+        return self.log({'kind': 'release', 'button': event.button, 'at': self.at(self.pad, event.x, event.y)})
+
+    def moved(self, _, event):
+        return self.log({'kind': 'motion', 'at': self.at(self.pad, event.x, event.y),
+                         'held': bool(event.state & Gdk.ModifierType.BUTTON1_MASK)})
 
     def scrolled(self, _, event):
         ok, dx, dy = event.get_scroll_deltas()
         if not ok:
             dx, dy = {Gdk.ScrollDirection.UP: (0, -1), Gdk.ScrollDirection.DOWN: (0, 1),
                       Gdk.ScrollDirection.LEFT: (-1, 0), Gdk.ScrollDirection.RIGHT: (1, 0)}.get(event.direction, (0, 0))
-        self.s['pad'].append({'kind': 'scroll', 'dx': dx, 'dy': dy, 'smooth': ok,
-                              'at': self.at(self.pad, event.x, event.y), 'mods': mods(event.state)})
-        dirty()
-        return True
+        return self.log({'kind': 'scroll', 'dx': dx, 'dy': dy, 'smooth': ok,
+                         'at': self.at(self.pad, event.x, event.y), 'mods': mods(event.state)})
 
     def dropped(self, _widget, _context, _x, _y, data, _info, _time):
         self.s['dropped'].append(data.get_text())

@@ -74,6 +74,8 @@ function difference(actual, expected) {
   return `differs at ${i} of ${expected.length} (got ${actual.length}): got ${JSON.stringify(actual.slice(Math.max(0, i - 20), i + 30))}, `
     + `expected ${JSON.stringify(expected.slice(Math.max(0, i - 20), i + 30))}`;
 }
+/** Pad events after the count `before` (the pad keeps its last 300). */
+const padSince = (read, before) => read().pad.filter((e) => e.seq > before);
 const centre = ([x, y, w, h]) => [Math.round(x + w / 2), Math.round(y + h / 2)];
 /** Poll until read() returns the same value for 600 ms (scrolling may coast). */
 async function settled(read, describe, timeout = 8000) {
@@ -331,12 +333,11 @@ export default function (test) {
       const pad = read().geometry.pad;
       const p1 = [pad[0] + 37, pad[1] + 23], p2 = [pad[0] + pad[2] - 41, pad[1] + pad[3] - 17], p3 = [pad[0] + 300, pad[1] + 60];
       const events = async (code) => {
-        const before = read().pad.length;
+        const before = read().padCount;
         await js(`const w = await e2eWindow(${JSON.stringify(title)}); ${code} await ${app}.getAXState({ emit: false });`);
-        let added;
-        await until(() => { added = read().pad.slice(before); return added.length > 0 || 'no pad events'; }, `${app} pad events`);
-        await settled(() => read().pad.length, `${app} pad events settled`);
-        return read().pad.slice(before);
+        await until(() => padSince(read, before).some((x) => x.kind === 'press') || 'no pad presses', `${app} pad events`);
+        await settled(() => read().padCount, `${app} pad events settled`);
+        return padSince(read, before).filter((x) => x.kind === 'press');
       };
       let e = await events(`await ${app}.click(${JSON.stringify(p1)});`);
       expect(e.length === 1 && same(e[0].at, p1) && e[0].button === 1 && e[0].n === 1, `${app}: left click at ${p1}: ${JSON.stringify(e)}`);
@@ -401,13 +402,13 @@ export default function (test) {
     for (const [app, read, title] of [['inp', gtkState, INPUT], ['xinp', xState, XINPUT]]) {
       const [x, y] = centre(read().geometry.pad);
       for (const key of ['ctrl', 'shift', null]) {
-        const before = read().pad.length;
+        const before = read().padCount;
         await js(`const w = await e2eWindow(${JSON.stringify(title)});
           await cua.computer.scroll({ window: w, x: ${x}, y: ${y}, direction: "down", pixels: 40${key ? `, key: "${key}"` : ''} });
           await ${app}.getAXState({ emit: false });`);
-        await until(() => read().pad.slice(before).some((e) => e.kind === 'scroll' && (e.dy > 0 || e.dx > 0)) || read().pad.slice(before),
+        await until(() => padSince(read, before).some((e) => e.kind === 'scroll' && (e.dy > 0 || e.dx > 0)) || padSince(read, before),
           `${app}: ${key ?? 'plain'} wheel reached the pad`);
-        const moved = read().pad.slice(before).filter((e) => e.kind === 'scroll' && (e.dy || e.dx));
+        const moved = padSince(read, before).filter((e) => e.kind === 'scroll' && (e.dy || e.dx));
         expect(moved.every((e) => same(e.mods, key ? [key] : [])), `${app}: ${key ?? 'plain'} wheel arrived with ${JSON.stringify(moved)}`);
       }
     }
@@ -521,6 +522,26 @@ export default function (test) {
         await until(() => same(read().docSelection, [from, to]) || read().docSelection,
           `${app}: drag selects ${JSON.stringify(doc.slice(from, to))} [${from}, ${to}]`);
       }
+      // Sky drag_handle on the event pad: the press, the motion with the button
+      // held and the release reach the app at the exact points, in order, as
+      // the steps are made (no observation in between, as in a quick script).
+      const pad = read().geometry.pad;
+      const points = [[pad[0] + 30, pad[1] + 30], [pad[0] + 200, pad[1] + 50], [pad[0] + 400, pad[1] + 80]];
+      const since = read().padCount;
+      await js(`const w = await e2eWindow(${JSON.stringify(title)});
+        await cua.computer.drag_handle({ window: w, action: "start", x: ${points[0][0]}, y: ${points[0][1]} });
+        try {
+          for (const [x, y] of ${JSON.stringify(points.slice(1))}) await cua.computer.drag_handle({ window: w, action: "move_to", x, y });
+        } finally { await cua.computer.drag_handle({ action: "end" }); }`);
+      const sequence = () => padSince(read, since).filter((e) => e.kind !== 'motion' || e.held)
+        .map((e) => `${e.kind}@${e.at.map(Math.round)}`).join(' ');
+      const expected = `press@${points[0]} motion@${points[1]} motion@${points[2]} release@${points[2]}`;
+      const arrived = await until(() => sequence() === expected || sequence(), `${app}: drag_handle events before any observation`, 4000)
+        .then(() => true, () => false);
+      const before = sequence();
+      if (!arrived) await js(`await ${app}.getAXState({ emit: false });`);
+      writeFileSync(join(out, `input-drag-handle-${app}.json`), JSON.stringify({ expected, beforeObservation: before, after: sequence() }));
+      expect(arrived, `${app}: drag_handle delivered ${JSON.stringify(before)} before an observation, ${JSON.stringify(sequence())} after; expected ${expected}`);
       // Sky drag_handle: the button stays pressed across calls, the selection
       // follows each step, other pointer actions are refused meanwhile.
       const start = doc.indexOf('gamma'), steps = [doc.indexOf('line') + 1, doc.indexOf('of') + 1, doc.indexOf('delta') + 3];

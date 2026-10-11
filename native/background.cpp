@@ -290,9 +290,12 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         require(valid(pos) || (!window->m_isX11 && bool(window->m_popupHead->at(window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL)+pos,true))),"Point outside window and its popups");
         Vector2D end=pos;
         if(op=="drag") { end={num(j.get(),"end_x"),num(j.get(),"end_y")}; require(valid(end),"Drag endpoint outside window"); }
-        int count=1; uint32_t button=272; double dx=0,dy=0;
+        int count=1; uint32_t button=272; double dx=0,dy=0; bool momentum=true;
         if(op=="click") { auto b=str(j.get(),"button"); require(b=="left"||b=="right"||b=="middle","Invalid button"); button=b=="right"?273:b=="middle"?274:272; auto n=num(j.get(),"count"); require(n>=1&&n<=3&&std::floor(n)==n,"Invalid click count"); count=n; }
-        if(op=="scroll") {dx=num(j.get(),"dx");dy=num(j.get(),"dy");require(std::abs(dx)<=8388607&&std::abs(dy)<=8388607,"Scroll out of range");}
+        if(op=="scroll") {
+            dx=num(j.get(),"dx");dy=num(j.get(),"dy");require(std::abs(dx)<=8388607&&std::abs(dy)<=8388607,"Scroll out of range");
+            json_object* m=nullptr;if(json_object_object_get_ex(j.get(),"momentum",&m))momentum=json_object_get_boolean(m);
+        }
         auto hit=Desktop::viewState()->hitTest();
         auto origin=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);
         Vector2D local=pos; auto surface=window->m_isX11?main:hit.windowSurfaceAt(origin+pos,window,local); require(bool(surface),"No input surface at point");
@@ -321,10 +324,10 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             // right-click there sends its context menu to the window, not to
             // the widget under the pointer, and no menu opens.
             if(op=="click"){p->sendMotion(t,local+Vector2D{local.x>=1?-1.0:1.0,0.0});p->sendFrame();}
-            // A scroll shares the frame of the pointer's arrival. Qt defers the
-            // later frames of a burst to an idle timer, by which time the leave
-            // below has taken its pointer focus and the wheel event is dropped;
-            // the first frame of a burst is handled at once.
+            // A scroll shares the frame of the pointer's arrival. Qt 6 defers
+            // the later frames of a burst to an idle timer, by which time the
+            // leave below has taken its pointer focus and the wheel event is
+            // dropped; the first frame of a burst is handled at once.
             p->sendMotion(t,local); if(op!="scroll")p->sendFrame();
             if(op=="click") for(int i=0;i<count;++i) { p->sendButton(t+i*30,button,WL_POINTER_BUTTON_STATE_PRESSED); p->sendFrame(); p->sendButton(t+i*30+1,button,WL_POINTER_BUTTON_STATE_RELEASED); p->sendFrame(); }
             if(op=="drag") {
@@ -334,12 +337,22 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             }
             if(op=="scroll") {
                 p->sendAxisSource(WL_POINTER_AXIS_SOURCE_FINGER);
+                // Without momentum the stop comes first in the same frame:
+                // Chromium then scrolls the deltas and starts no fling (it
+                // flings when a later frame stops the scroll).
+                if(!momentum){if(dx)p->sendAxisStop(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL);if(dy)p->sendAxisStop(t,WL_POINTER_AXIS_VERTICAL_SCROLL);}
                 if(dx) p->sendAxis(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL,dx);
                 if(dy) p->sendAxis(t,WL_POINTER_AXIS_VERTICAL_SCROLL,dy);
                 p->sendFrame();
-                if(dx) p->sendAxisStop(t+1,WL_POINTER_AXIS_HORIZONTAL_SCROLL);
-                if(dy) p->sendAxisStop(t+1,WL_POINTER_AXIS_VERTICAL_SCROLL);
+                // GTK 3 delivers either a frame's pointer event (the enter or
+                // motion) or its scroll, keeping the scroll for the next frame:
+                // an empty one, before the stop that would zero it.
                 p->sendFrame();
+                if(momentum) {
+                    if(dx) p->sendAxisStop(t+1,WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+                    if(dy) p->sendAxisStop(t+1,WL_POINTER_AXIS_VERTICAL_SCROLL);
+                    p->sendFrame();
+                }
             }
             if(op!="move") p->sendLeave();
             if(previous && previous->client()==seat->client()) {p->sendEnter(previous,previousLocal);p->sendFrame();}

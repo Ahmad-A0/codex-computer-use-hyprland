@@ -620,12 +620,14 @@ class Backend:
             # units, Chromium 120 pixels; send what moves the requested pixels
             # (on XWayland, GTK 3 gets one wheel click per step).
             step = self.ax.wheel_step(c, x, y, dx != 0)
+            fields = {}
             if step:
                 amount = 40 * max(1, round(pixels / step)) if c.get("xwayland") else pixels * 10 / step
             elif not c.get("xwayland") and self.ax.toolkit(c)[0] == "chromium":
-                amount = pixels / 12
+                # As exact as macOS: no touchpad fling after the requested pixels.
+                amount, fields = pixels / 12, {"momentum": False}
             with self.holding(c, names):
-                background.send(c, "scroll", x=x, y=y, dx=dx * amount, dy=dy * amount)
+                background.send(c, "scroll", x=x, y=y, dx=dx * amount, dy=dy * amount, **fields)
 
     def drag(self, p):
         c = self.target(p["window"]) if "window" in p else None
