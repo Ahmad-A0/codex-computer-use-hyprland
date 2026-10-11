@@ -127,6 +127,7 @@ def chooser(action, title, folder):
     dialog = Gtk.FileChooserDialog(title=title, transient_for=window, modal=True, action=action)
     dialog.add_button('_Cancel', Gtk.ResponseType.CANCEL)
     dialog.add_button('_Open' if action == Gtk.FileChooserAction.OPEN else '_Save', Gtk.ResponseType.ACCEPT)
+    dialog.set_default_response(Gtk.ResponseType.ACCEPT)  # as apps do: Enter in the location bar
     dialog.set_default_size(800, 600)
     dialog.set_local_only(True)
     if action == Gtk.FileChooserAction.SAVE:

@@ -239,7 +239,10 @@ which may be another monitor than its workspace's, so such a window is moved ont
 its workspace's monitor (centred on its parent there, else in the work area). The launcher
 registers the app's process with the compositor module and marks its environment;
 only such processes, their children and windows parented to theirs are affected,
-never your own apps. While you are using the app (one of its windows is focused on
+never your own apps' windows otherwise. The exception is a window the agent causes
+in an app you started: one whose parent window it acted on in the last two seconds
+(a dialog after its click) opens beside that parent without focus, as a macOS sheet
+does, instead of on your workspace. While you are using the app (one of its windows is focused on
 that workspace), its new windows open normally. `launch_app` acknowledges desktop launch success or failure;
 it does not promise a new window. Use normal app UI actions to create additional
 windows, and compare inventories before treating a window as disposable.
