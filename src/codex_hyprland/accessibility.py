@@ -77,7 +77,11 @@ class Accessibility:
 
     @staticmethod
     def identity(obj):
-        return f"atspi:{obj.get_process_id()}:{obj.path}"
+        try:
+            pid = obj.get_process_id()
+        except Exception:  # "Process is defunct": the object's window or app is gone.
+            pid = "gone"
+        return f"atspi:{pid}:{obj.path}"
 
     def name(self, obj, role):
         name = obj.get_name() or ""
@@ -407,7 +411,19 @@ class Accessibility:
         limit = 1500
         truncated = False
 
+        from gi.repository import GLib
+
         def walk(obj, depth=0, popup=False, offset=None):
+            # Elements can be destroyed while they are read (a closing window,
+            # menu or dialog): they are gone, not an error.
+            try:
+                return visit(obj, depth, popup, offset)
+            except GLib.Error:
+                if depth == 0:
+                    raise ValueError("AT-SPI window disappeared during observation") from None
+                return None
+
+        def visit(obj, depth, popup, offset):
             nonlocal truncated
             if len(seen) >= limit or depth > 40 or time.monotonic() > deadline:
                 truncated = True
@@ -416,16 +432,11 @@ class Accessibility:
             if ident in seen:
                 return None
             seen.add(ident)
-            try:
-                obj.clear_cache()
-                states = obj.get_state_set()
-                if states.contains(self.api.StateType.DEFUNCT):
-                    return None
-                role = obj.get_role_name()
-            except Exception:  # Destroyed while observed (a closing window or menu).
-                if depth == 0:
-                    raise ValueError("AT-SPI window disappeared during observation") from None
+            obj.clear_cache()
+            states = obj.get_state_set()
+            if states.contains(self.api.StateType.DEFUNCT):
                 return None
+            role = obj.get_role_name()
             node = {"id": ident, "role": role, "name": self.name(obj, role),
                     "states": [], "actions": [], "children": []}
             for state in ("checked", "defunct", "editable", "enabled", "expanded",
@@ -498,10 +509,14 @@ class Accessibility:
         if found is None:
             raise ValueError("Unknown or stale element; refresh getAXState()")
         obj, role, name = found
-        obj.clear_cache()
-        if (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
-                or obj.get_role_name() != role or self.name(obj, role) != name
-                or obj.get_process_id() != client["pid"]):
+        try:
+            obj.clear_cache()
+            changed = (obj.get_state_set().contains(self.api.StateType.DEFUNCT)
+                       or obj.get_role_name() != role or self.name(obj, role) != name
+                       or obj.get_process_id() != client["pid"])
+        except Exception:  # Destroyed since the observation.
+            changed = True
+        if changed:
             raise ValueError("Element changed; refresh getAXState()")
         # A surviving object may have been reparented into another window.
         expected = self.root(client)

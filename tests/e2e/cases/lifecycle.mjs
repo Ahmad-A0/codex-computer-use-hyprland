@@ -156,11 +156,16 @@ async function closeLeftovers(titles) {
 /** The focused window, workspace and pointer as they were (see seat()). Adding
  *  or removing an output makes Hyprland focus and warp to a monitor itself. */
 async function restoreSeat(saved) {
-  const [window, , cursor] = JSON.parse(saved);
-  if (window && hypr('activewindow').address !== window) dispatch(`hl.dsp.focus({ window = "address:${window}" })`);
-  const now = hypr('cursorpos');
-  if (now.x !== cursor.x || now.y !== cursor.y) dispatch(`hl.dsp.cursor.move({ x = ${cursor.x}, y = ${cursor.y} })`);
-  await until(() => seat() === saved, `desktop restored to ${saved}`, 5000);
+  const [window, workspace, cursor] = JSON.parse(saved);
+  const monitor = hypr('workspaces').find((w) => w.id === workspace)?.monitor;
+  await until(() => {
+    if (seat() === saved) return true;
+    if (monitor && hypr('activeworkspace').id !== workspace) dispatch(`hl.dsp.focus({ monitor = "${monitor}" })`);
+    if (window && hypr('activewindow').address !== window) dispatch(`hl.dsp.focus({ window = "address:${window}" })`);
+    const now = hypr('cursorpos');
+    if (now.x !== cursor.x || now.y !== cursor.y) dispatch(`hl.dsp.cursor.move({ x = ${cursor.x}, y = ${cursor.y} })`);
+    return seat();
+  }, `desktop restored to ${saved}`, 5000);
 }
 
 /** Width and height of a JPEG from its frame header. */
@@ -273,9 +278,13 @@ export default function (test) {
       const cell = (name) => JSON.stringify(el('table cell', name));
       await js(`globalThis.lifeOpen = await lifeBind("Codex E2E Life Open File");
         await lifeOpen.pressKey("ctrl+l");
-        await lifeOpen.typeText(${JSON.stringify(`${pick}/`)});
-        await lifeOpen.pressKey("Return");
-        await lifeWait(async () => lifeIds(await lifeOpen.getAXState({ emit: false, disableDiffing: true }), ${cell('file-03.txt')}).length > 0
+        await lifeOpen.typeText(${JSON.stringify(`${pick}/`)});`);
+      const typed = await data(write('await lifeOpen.getAXState({ emit: false, disableDiffing: true })'));
+      writeFileSync(join(evidence, 'chooser-typed.txt'), typed);
+      await shot('lifeOpen', 'chooser-typed');
+      await js(`await lifeOpen.pressKey("Return");`);
+      await shot('lifeOpen', 'chooser-return');
+      await js(`await lifeWait(async () => lifeIds(await lifeOpen.getAXState({ emit: false, disableDiffing: true }), ${cell('file-03.txt')}).length > 0
           || "file-03.txt not listed", "typed folder opened", 15000);`, { timeout: 40000 });
       // Files selected in the list (the chooser may preselect one on entering the folder).
       const picked = () => (life('codex-e2e-life-dialogs').opened_selected ?? []).filter((f) => f.startsWith(`${pick}/`));
