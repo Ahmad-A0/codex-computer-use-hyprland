@@ -174,23 +174,6 @@ trap.clicked.connect(count('trap'))
 disabled.clicked.connect(count('disabledClicks'))
 hidden.clicked.connect(count('hiddenClicks'))
 reveal.clicked.connect(revealed)
-from PyQt6.QtCore import QEvent, QObject  # noqa: E402
-
-
-class Wheels(QObject):
-    """TEMPORARY: record wheel events Qt delivers, for the scroll probe."""
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Wheel:
-            state.setdefault('wheels', []).append([type(obj).__name__, str(event.phase()), event.angleDelta().y(),
-                                                   event.pixelDelta().y(), event.isAccepted()])
-            state['wheels'] = state['wheels'][-12:]
-            state['popup'] = str(QApplication.activePopupWidget())
-            save()
-        return False
-
-
-wheels = Wheels()
-app.installEventFilter(wheels)
 window.resize(520, 720)
 window.show()
 save()

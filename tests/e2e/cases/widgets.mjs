@@ -119,6 +119,20 @@ async function settled(read, describe, quiet = 600, timeout = 8000) {
   }, describe, timeout);
   return JSON.parse(last);
 }
+/** settled() for a window whose scrolling animates: observing it lets a
+ *  window on the hidden workspace render the animation. */
+async function settledRendering(read, app, describe, quiet = 800, timeout = 10000) {
+  let last;
+  let since = Date.now();
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    await js(`await ${app}.getAXState({ emit: false });`);
+    let now;
+    try { now = JSON.stringify(read()); } catch { continue; }
+    if (now !== last) { last = now; since = Date.now(); } else if (Date.now() - since >= quiet) return JSON.parse(last);
+  }
+  throw new Error(`${describe} (last: ${last})`);
+}
 async function selectTab(app, name, done) {
   await js(`await ${app}.click(await e2eFind(${app}, ${JSON.stringify(name)}, "page tab")); await ${app}.getAXState({ emit: false });`);
   await until(done, `${name} tab is current`, 8000);
@@ -726,11 +740,10 @@ export default function (test) {
       expect(numberIn(lineOf(await js(`await nodeRepl.write(${full('wweb')});`), volume)) === 70, 'the range does not show its new value');
 
       // One page down from the top moves by at most the viewport.
-      const top = await settled(() => web().y, 'page at rest');
+      const top = await settledRendering(() => web().y, 'wweb', 'page at rest');
       const viewport = clients().find((c) => c.title.startsWith('Codex E2E Widgets|')).size[1];
       await js(`await wweb.scroll(await e2eFind(wweb, "Codex E2E Widgets", "heading"), "down", 1); await wweb.getAXState({ emit: false });`);
-      await until(() => web().y !== top, 'the page scrolled');
-      const moved = (await settled(() => web().y, 'page scrolling settled')) - top;
+      const moved = (await settledRendering(() => web().y, 'wweb', 'page scrolling settled')) - top;
       expect(moved > 0 && moved <= viewport, `one page moved the page by ${moved} px; the window is ${viewport} px tall`);
 
       const r2 = await run(`const t = ${full('wweb')};
@@ -741,42 +754,4 @@ export default function (test) {
       await until(() => web().far && web().farClicks === 1, 'far checkbox and button used');
       expect(has(r2.t, r2.checkbox, 'checked'), `far checkbox not shown checked: ${lineOf(r2.t, r2.checkbox)}`);
     }), { needs: browser ? null : 'no Chromium-based browser' });
-  // TEMPORARY probe: how each toolkit moves content for one scroll event of each kind.
-  test('widgets probe: scroll sources', async () => {
-    await open('wg4', G4); await open('wqt', QT); await openWeb();
-    await selectTab('wqt', 'Items', () => state(QT).tab === 0);
-    const apps = [
-      ['wg4', () => clients().find((c) => c.class === G4), () => state(G4).scroll, [280, 120],
-        [['finger 20', {}, 20], ['finger 60', {}, 60]]],
-      ['wweb', webWindow, () => web().y, null, [['finger 20', {}, 20], ['finger 60', {}, 60]]],
-      ['wqt', () => clients().find((c) => c.class === QT), () => [state(QT).tableScroll, ...state(QT).tableRows, state(QT).wheels ?? [], state(QT).popup], [260, 448],
-        [['finger', {}, 100], ['finger no leave', { leave: false }, 100], ['wheel', { source: 'wheel', value120: 120 }, 15],
-          ['wheel no leave', { source: 'wheel', value120: 120, leave: false }, 15]]],
-    ];
-    const results = {};
-    for (const [name, window, read, point, variants] of apps) {
-      const c = window();
-      const at = point ?? [c.size[0] / 2, c.size[1] / 2];
-      results[name] = { point: at };
-      for (const [label, options, amount] of variants) {
-        for (const direction of [1, -1]) {
-          const before = await settled(read, 'at rest');
-          const reply = execFileSync('hyprctl', ['codex-background', JSON.stringify({ op: 'scroll', address: c.address, x: at[0], y: at[1], dx: 0, dy: direction * amount, ...options })], { encoding: 'utf8' });
-          let last = JSON.stringify(read()); let since = Date.now();
-          const deadline = Date.now() + 4000;
-          while (Date.now() < deadline && Date.now() - since < 800) {
-            await js(`await ${name}.getAXState({ emit: false });`);
-            const now = JSON.stringify(read());
-            if (now !== last) { last = now; since = Date.now(); }
-          }
-          results[name][`${label}${direction > 0 ? ' down' : ' up'}`] = [before, JSON.parse(last), reply.includes('"ok":true') ? '' : reply];
-        }
-      }
-    }
-    // The provider's own scroll of the Qt table.
-    await js(`await wqt.scroll(await e2eFind(wqt, "Prices"), "down", 1); await wqt.getAXState({ emit: false });`);
-    results.providerQt = await settled(() => [state(QT).tableScroll, state(QT).wheels ?? []], 'qt');
-    writeFileSync(join(out, 'widgets-probe.json'), JSON.stringify(results, null, 1));
-    throw new Error(`probe:\n${JSON.stringify(results)}`);
-  });
 }

@@ -830,19 +830,88 @@ class Accessibility:
                              == normal(value), 3):
             raise RuntimeError('The element does not show the typed value')
 
-    def toolkit(self, client, ident):
-        """(toolkit name, major version) of the element's application, e.g. ("GTK", "3")."""
-        obj = self.resolve(client, ident)
+    def at_point(self, client, x, y):
+        """The deepest accessible element at a window point, or None."""
         try:
-            return obj.get_toolkit_name() or "", (obj.get_toolkit_version() or "").split(".")[0]
+            obj = self.root(client)
+            for _ in range(32):
+                if obj is None or not obj.is_component():
+                    break
+                child = obj.get_accessible_at_point(int(x), int(y), self.api.CoordType.WINDOW)
+                if child is None or self.identity(child) == self.identity(obj):
+                    break
+                obj = child
+            return obj
         except Exception:
-            return "", ""
+            return None
+
+    def scroll_input(self, client, pixels, ident=None, point=None, horizontal=False):
+        """The native scroll that moves the content under the target by
+        ``pixels``: (axis value, extra native fields). Wayland leaves the scale
+        of scroll input to each toolkit: GTK 3 moves min(page^(2/3), page/2)
+        of the scrolled view per ten touchpad pixels, GTK 4 2.5 pixels per
+        pixel (MAGIC_SCROLL_FACTOR). Chromium flings touchpad input, but moves a
+        wheel's value120 in pixels; Qt scrolls item views by three rows per
+        wheel notch (its default wheelScrollLines). Others get touchpad pixels."""
+        try:
+            obj = self.resolve(client, ident) if ident is not None else self.at_point(client, *point)
+            if obj is None:
+                return pixels, {}
+            name = (obj.get_toolkit_name() or "").casefold()
+            major = (obj.get_toolkit_version() or "").split(".")[0]
+        except Exception:
+            return pixels, {}
+        if name.startswith("gtk") and major == "3":
+            page = self.viewport_of(client, obj, horizontal)
+            unit = min(page ** (2 / 3), page / 2)
+            return (pixels * 10 / unit if unit > 0 else pixels), {}
+        if name.startswith("gtk") and major == "4":
+            return pixels / 2.5, {}
+        if name == "chromium":
+            notches = max(1, round(pixels))
+            return notches / 12, {"source": "wheel", "value120": notches}
+        if name == "qt":
+            pitch = self.row_pitch(obj, horizontal)
+            # Whole rows only, never more than were asked for, so nothing is skipped.
+            notches = max(1, int(pixels // pitch)) * 40 if pitch else max(1, round(pixels * 2))
+            return notches / 12, {"source": "wheel", "value120": notches}
+        return pixels, {}
+
+    def row_pitch(self, obj, horizontal=False):
+        """Distance between the rows (columns) of the item view containing obj."""
+        view = obj
+        for _ in range(8):
+            if view is None:
+                return None
+            if view.get_role_name() in ("list", "list box", "table", "tree table", "tree") and \
+                    view.get_state_set().contains(self.api.StateType.MANAGES_DESCENDANTS):
+                break
+            view = view.get_parent()
+        else:
+            return None
+        if view is None:
+            return None
+        starts = set()
+        for i in range(min(view.get_child_count(), 400)):
+            child = view.get_child_at_index(i)
+            if child is None or child.get_role_name() not in ("table cell", "list item", "tree item"):
+                continue
+            if not child.get_state_set().contains(self.api.StateType.SHOWING):
+                continue
+            rect = child.get_extents(self.api.CoordType.WINDOW)
+            if on_screen(rect):
+                starts.add(rect.x if horizontal else rect.y)
+        ordered = sorted(starts)
+        steps = [b - a for a, b in zip(ordered, ordered[1:]) if b > a]
+        return min(steps) if steps else None
 
     def viewport(self, client, ident, horizontal=False):
-        """Measure the nearest visible scroll viewport, clipped to the window.
-        Item views that scroll themselves (Qt's, GTK 3's tree view) manage
+        """Measure the nearest visible scroll viewport, clipped to the window."""
+        return self.viewport_of(client, self.resolve(client, ident), horizontal)
+
+    def viewport_of(self, client, obj, horizontal=False):
+        """Item views that scroll themselves (Qt's, GTK 3's tree view) manage
         their descendants and are the viewport even without a scroll pane."""
-        obj = self.resolve(client, ident)
         best = client['size'][0 if horizontal else 1]
         for _ in range(64):
             if obj is None:

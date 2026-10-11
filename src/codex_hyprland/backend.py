@@ -553,29 +553,24 @@ class Backend:
             pixels = pages * extent
         else:
             pixels = number(p.get("pixels", 500), "pixels")
-        if c and "element_id" in p and not c.get("xwayland"):
-            # GTK 3 moves a touchpad scroll pixel by a tenth of its scroll unit,
-            # min(page^(2/3), page/2) of the scrolled viewport, so one page of
-            # input would move a list about four pages. Send what moves the
-            # content by the requested distance, as on other toolkits.
-            ident = text(p["element_id"], "element_id", False)
-            name, major = self.ax.toolkit(c, ident)
-            if name.casefold().startswith("gtk") and major == "3":
-                page = self.ax.viewport(c, ident, directions[p["direction"]][0] != 0)
-                unit = min(page ** (2 / 3), page / 2)
-                if unit > 0:
-                    pixels = pixels * 10 / unit
-        if not 0 < pixels <= 8388607:
-            raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         names = chord(p["key"])[2] if "key" in p else ()
         self.pointer_free()
         x, y = self.location(p, c)
+        axis, extra = pixels, {}
+        if c and not c.get("xwayland"):
+            # Each toolkit scales Wayland scroll input its own way (GTK 3 would
+            # move a list about four pages for one page of input); send what
+            # moves the content by the requested distance.
+            ident = text(p["element_id"], "element_id", False) if "element_id" in p else None
+            axis, extra = self.ax.scroll_input(c, pixels, ident, (x, y), directions[p["direction"]][0] != 0)
+        if not 0 < axis <= 8388607:
+            raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         self.point(c, x, y)
         dx, dy = directions[p["direction"]]
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
             with self.holding(c, names):
-                background.send(c, "scroll", x=x, y=y, dx=dx * pixels, dy=dy * pixels)
+                background.send(c, "scroll", x=x, y=y, dx=dx * axis, dy=dy * axis, **extra)
 
     def drag(self, p):
         c = self.target(p["window"]) if "window" in p else None
