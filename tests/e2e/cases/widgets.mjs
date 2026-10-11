@@ -428,10 +428,10 @@ export default function (test) {
       // Keyboard on the slider, as a user adjusts it after clicking it.
       await js(`await wg3.click(${volume}); await wg3.pressKey("End"); await wg3.getAXState({ emit: false });`);
       await until(() => state(G3).volume === 100, 'End moves the slider to its maximum');
-      await js(`await wg3.pressKey("Page_Down"); await wg3.getAXState({ emit: false });`);
-      await until(() => state(G3).volume === 90, 'Page Down lowers the slider by a page');
+      await js(`await wg3.pressKey("Left"); await wg3.getAXState({ emit: false });`);
+      await until(() => state(G3).volume === 99, 'Left lowers the slider by a step');
       const t3 = await js(`await nodeRepl.write(${diff('wg3')});`);
-      expect(changes(t3).some((c) => c.id === volume && numberIn(c.body) === 90), `the slider change is not in the diff:\n${t3}`);
+      expect(changes(t3).some((c) => c.id === volume && numberIn(c.body) === 99), `the slider change is not in the diff:\n${t3}`);
     }));
 
   test('widgets XWayland: list row, tree expansion, combo box and spin button in a GTK3 X11 window',

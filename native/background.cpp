@@ -326,8 +326,11 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
                 if(dx) p->sendAxis(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL,dx);
                 if(dy) p->sendAxis(t,WL_POINTER_AXIS_VERTICAL_SCROLL,dy);
                 p->sendFrame();
-                if(dx) p->sendAxisStop(t+1,WL_POINTER_AXIS_HORIZONTAL_SCROLL);
-                if(dy) p->sendAxisStop(t+1,WL_POINTER_AXIS_VERTICAL_SCROLL);
+                // The stop carries the scroll's own timestamp: toolkits derive a
+                // kinetic fling from the motion's duration, and one scroll 1 ms
+                // long would fling GTK 4 lists to their end.
+                if(dx) p->sendAxisStop(t,WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+                if(dy) p->sendAxisStop(t,WL_POINTER_AXIS_VERTICAL_SCROLL);
                 p->sendFrame();
             }
             if(op!="move") p->sendLeave();

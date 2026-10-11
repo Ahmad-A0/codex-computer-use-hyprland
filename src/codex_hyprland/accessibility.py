@@ -672,6 +672,9 @@ class Accessibility:
                     obj.clear_cache()
                     rect, part = self.shown_part(client, obj)
                     break
+        # A sliver of a row at a list's edge is often its border, not the row.
+        if part is not None and (part[2] - part[0] < min(rect.width, 8) or part[3] - part[1] < min(rect.height, 8)):
+            part = None
         if part is None:
             raise ValueError("Element is scrolled out of view or not on screen; scroll it into view and refresh getAXState()")
         return (part[0] + part[2]) / 2, (part[1] + part[3]) / 2
@@ -753,6 +756,31 @@ class Accessibility:
             if not obj.set_caret_offset(offset) or obj.get_caret_offset() != offset:
                 raise RuntimeError('Application did not apply the requested caret position')
 
+    @staticmethod
+    def retained(check, timeout=1.5):
+        """Whether check() holds within the timeout. Chromium applies values
+        set through AT-SPI asynchronously, after the call returns."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if check():
+                return True
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(.05)
+
+    def set_numeric(self, obj, value):
+        import math
+        try:
+            numeric = float(value)
+        except ValueError:
+            raise ValueError('This control requires a numeric value') from None
+        if not math.isfinite(numeric) or not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
+            raise ValueError('Value is outside the control range')
+        if not obj.set_current_value(numeric):
+            raise RuntimeError('Application refused the numeric value')
+        if not self.retained(lambda: math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6)):
+            raise RuntimeError('Application did not retain the numeric value')
+
     def set_value(self, client, ident, value):
         import math
         obj = self.resolve(client, ident)
@@ -763,37 +791,52 @@ class Accessibility:
             try:
                 numeric = float(value)
             except ValueError:
-                numeric = None
-            if numeric is not None and math.isfinite(numeric):
-                if not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
-                    raise ValueError('Value is outside the control range')
-                if not obj.set_current_value(numeric):
-                    raise RuntimeError('Application refused the numeric value')
-                if not math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6):
-                    raise RuntimeError('Application did not retain the numeric value')
+                numeric = math.nan
+            if math.isfinite(numeric):
+                self.set_numeric(obj, value)
                 return
         if obj.is_editable_text():
             if not self.api.EditableText.set_text_contents(obj, value):
                 raise RuntimeError('Application refused the replacement value')
             # Password fields must not be read back or included in diagnostics.
             if obj.get_role_name() != 'password text' and obj.is_text():
-                actual = self.api.Text.get_text(obj, 0, obj.get_character_count())
-                if actual != value:
+                if not self.retained(lambda: self.api.Text.get_text(obj, 0, obj.get_character_count()) == value):
                     raise RuntimeError('Application did not retain the replacement value')
             return
         if obj.is_value():
-            try:
-                numeric = float(value)
-            except ValueError:
-                raise ValueError('This control requires a numeric value') from None
-            if not math.isfinite(numeric) or not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
-                raise ValueError('Value is outside the control range')
-            if not obj.set_current_value(numeric):
-                raise RuntimeError('Application refused the numeric value')
-            if not math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6):
-                raise RuntimeError('Application did not retain the numeric value')
+            self.set_numeric(obj, value)
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
+
+    def typed_value(self, client, ident):
+        """Whether setValue must type: editable text without a replaceable
+        value (Chromium exposes contenteditable regions so)."""
+        obj = self.resolve(client, ident)
+        return (not obj.is_editable_text() and not obj.is_value() and obj.is_text()
+                and obj.get_role_name() != 'password text'
+                and obj.get_state_set().contains(self.api.StateType.EDITABLE))
+
+    def select_all(self, client, ident):
+        obj = self.resolve(client, ident)
+        count = obj.get_character_count()
+        ok = obj.set_selection(0, 0, count) if obj.get_n_selections() else obj.add_selection(0, count)
+        if not ok and count:
+            raise RuntimeError('Application refused to select the text to replace; no text typed')
+
+    def verify_text(self, client, ident, value):
+        obj = self.resolve(client, ident)
+        normal = lambda text: text.replace(OBJECT_REPLACEMENT, "").strip()
+        if not self.retained(lambda: (obj.clear_cache(), normal(self.api.Text.get_text(obj, 0, obj.get_character_count())))[1]
+                             == normal(value), 3):
+            raise RuntimeError('The element does not show the typed value')
+
+    def toolkit(self, client, ident):
+        """(toolkit name, major version) of the element's application, e.g. ("GTK", "3")."""
+        obj = self.resolve(client, ident)
+        try:
+            return obj.get_toolkit_name() or "", (obj.get_toolkit_version() or "").split(".")[0]
+        except Exception:
+            return "", ""
 
     def viewport(self, client, ident, horizontal=False):
         """Measure the nearest visible scroll viewport, clipped to the window.

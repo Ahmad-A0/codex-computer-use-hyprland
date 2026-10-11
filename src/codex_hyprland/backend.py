@@ -553,6 +553,17 @@ class Backend:
             pixels = pages * extent
         else:
             pixels = number(p.get("pixels", 500), "pixels")
+        if c and "element_id" in p and not c.get("xwayland"):
+            # GTK 3 moves a touchpad scroll pixel by a tenth of its scroll unit,
+            # min(page^(2/3), page/2) of the scrolled viewport, so one page of
+            # input would move a list about four pages. Send what moves the
+            # content by the requested distance, as on other toolkits.
+            ident = text(p["element_id"], "element_id", False)
+            if self.ax.toolkit(c, ident)[0:2] == ("GTK", "3"):
+                page = self.ax.viewport(c, ident, directions[p["direction"]][0] != 0)
+                unit = min(page ** (2 / 3), page / 2)
+                if unit > 0:
+                    pixels = pixels * 10 / unit
         if not 0 < pixels <= 8388607:
             raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         names = chord(p["key"])[2] if "key" in p else ()
@@ -789,7 +800,24 @@ class Backend:
         value = text(p.get("value"), "value")
         with self.seat(c):
             self.trust.guard_password_field(c, False)
-            self.ax.set_value(c, ident, value)
+            if not self.ax.typed_value(c, ident):
+                self.ax.set_value(c, ident, value)
+                return
+            # Rich text (a web page's contenteditable) has text but no
+            # replaceable value: as a user does, focus it, select all of it and
+            # type the value over it.
+            with self.app_action(c):
+                if c.get("xwayland"):
+                    background.send(c, "hold")
+                self.ax.focus_editable(c, ident)
+                self.ax.select_all(c, ident)
+            if not value:
+                background.send(c, "key", key="BackSpace", modifiers=[])
+            elif c.get("xwayland") and any(ord(char) > 127 for char in value):
+                self.ax.insert_focused_text(c, value)
+            else:
+                background.type_text(c, value)
+            self.ax.verify_text(c, ident, value)
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))
