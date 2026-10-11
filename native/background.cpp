@@ -74,6 +74,13 @@ struct TextKeyboard final : IKeyboard {
         updateKeymapFD();
     }
 };
+// Keys that carry the extra characters of a text batch. Toolkits read the
+// character from the keymap, but Chromium also maps the key code to a physical
+// key and acts on it: evdev KEY_CLOSE closes its window, others are media,
+// search or mail keys, and a code it does not know is dropped. These keys are
+// inert there: F13-F24, the international keys absent from a US keyboard
+// (102nd, Ro, Yen) and the extra keypad keys (comma, equal, parentheses).
+constexpr uint32_t SPARE_KEYS[]={191,192,193,194,195,196,197,198,199,200,201,202,94,97,132,129,125,187,188};
 struct Stroke { uint32_t code, mods; };
 std::optional<Stroke> lookup(xkb_keymap* map,xkb_keysym_t sym) {
     for (auto code=xkb_keymap_min_keycode(map);code<=xkb_keymap_max_keycode(map);++code) {
@@ -138,7 +145,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
             typing.push_back(sym);
             if(cp>126 && std::find(extras.begin(),extras.end(),cp)==extras.end()) extras.push_back(cp);
         }
-        require(extras.size()<=48,"Too many distinct Unicode scalars in one batch");
+        require(extras.size()<=std::size(SPARE_KEYS),"Too many distinct Unicode scalars in one batch");
     } else if(op=="key") {
         auto sym=keysym(str(j,"key").c_str());
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
@@ -170,7 +177,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         std::ostringstream symbols;
         if(!extras.empty()) {
             auto base=makeShared<TextKeyboard>("");
-            for(size_t i=0;i<extras.size();++i) symbols<<"replace key <"<<xkb_keymap_key_get_name(base->m_xkbKeymap,200+i)<<"> { [ U"<<std::hex<<std::setw(4)<<std::setfill('0')<<extras[i]<<std::dec<<" ] }; ";
+            for(size_t i=0;i<extras.size();++i) symbols<<"replace key <"<<xkb_keymap_key_get_name(base->m_xkbKeymap,SPARE_KEYS[i])<<"> { [ U"<<std::hex<<std::setw(4)<<std::setfill('0')<<extras[i]<<std::dec<<" ] }; ";
         }
         auto full=makeShared<TextKeyboard>(symbols.str());
         if(!encode(full)) {

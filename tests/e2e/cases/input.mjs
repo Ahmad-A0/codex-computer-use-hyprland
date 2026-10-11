@@ -528,11 +528,12 @@ export default function (test) {
       const pad = read().geometry.pad;
       const points = [[pad[0] + 30, pad[1] + 30], [pad[0] + 200, pad[1] + 50], [pad[0] + 400, pad[1] + 80]];
       const since = read().padCount;
-      await js(`const w = await e2eWindow(${JSON.stringify(title)});
-        await cua.computer.drag_handle({ window: w, action: "start", x: ${points[0][0]}, y: ${points[0][1]} });
+      // Points carry the window, so they are window coordinates (desktop ones otherwise).
+      await js(`{ const w = await e2eWindow(${JSON.stringify(title)}); const handle = cua.computer.drag_handle();
+        await handle.start({ window: w, x: ${points[0][0]}, y: ${points[0][1]} });
         try {
-          for (const [x, y] of ${JSON.stringify(points.slice(1))}) await cua.computer.drag_handle({ window: w, action: "move_to", x, y });
-        } finally { await cua.computer.drag_handle({ action: "end" }); }`);
+          for (const [x, y] of ${JSON.stringify(points.slice(1))}) await handle.move_to({ window: w, x, y });
+        } finally { await handle.end(); } }`);
       const sequence = () => padSince(read, since).filter((e) => e.kind !== 'motion' || e.held)
         .map((e) => `${e.kind}@${e.at.map(Math.round)}`).join(' ');
       const expected = `press@${points[0]} motion@${points[1]} motion@${points[2]} release@${points[2]}`;
@@ -546,16 +547,17 @@ export default function (test) {
       // follows each step, other pointer actions are refused meanwhile.
       const start = doc.indexOf('gamma'), steps = [doc.indexOf('line') + 1, doc.indexOf('of') + 1, doc.indexOf('delta') + 3];
       await js(`await ${app}.click(${JSON.stringify(at(doc.length))}); globalThis.handleWindow = await e2eWindow(${JSON.stringify(title)});
-        await cua.computer.drag_handle({ window: handleWindow, action: "start", x: ${at(start)[0]}, y: ${at(start)[1]} });`);
+        globalThis.textHandle = cua.computer.drag_handle();
+        await textHandle.start({ window: handleWindow, x: ${at(start)[0]}, y: ${at(start)[1]} });`);
       try {
         for (const offset of steps) {
-          await js(`await cua.computer.drag_handle({ window: handleWindow, action: "move_to", x: ${at(offset)[0]}, y: ${at(offset)[1]} });`);
+          await js(`await textHandle.move_to({ window: handleWindow, x: ${at(offset)[0]}, y: ${at(offset)[1]} });`);
           await until(() => same(read().docSelection, [start, offset].sort((a, b) => a - b)) || read().docSelection,
             `${app}: drag_handle at ${JSON.stringify(doc.slice(0, offset).slice(-6))}| selects from "gamma"`);
         }
         await rejects(`await ${app}.click(${JSON.stringify(at(0))});`, /drag handle is pressed/);
       } finally {
-        await js('await cua.computer.drag_handle({ action: "end" });');
+        await js('await textHandle.end();');
       }
       const released = [start, steps.at(-1)];
       await js(`await ${app}.getScreenshot({ emit: false });`);
@@ -597,12 +599,11 @@ export default function (test) {
       await until(() => same(second().dropped, [payload]) || { second: second().dropped, user: userState().dropped }, 'drop into the other window');
       expectUserSeat(user.address, cursor, workspace, 'a drag between windows');
       // The same with Sky's drag_handle, step by step.
-      await js(`const w = await e2eWindow(${JSON.stringify(INPUT)});
-        await cua.computer.drag_handle({ window: w, action: "start", x: ${source[0]}, y: ${source[1]} });
+      await js(`{ const w = await e2eWindow(${JSON.stringify(INPUT)}); const handle = cua.computer.drag_handle();
+        await handle.start({ window: w, x: ${source[0]}, y: ${source[1]} });
         try {
-          for (const [x, y] of ${JSON.stringify([[source[0] + 40, source[1] + 30], [700, 300], there])})
-            await cua.computer.drag_handle({ window: w, action: "move_to", x, y });
-        } finally { await cua.computer.drag_handle({ action: "end" }); }`);
+          for (const [x, y] of ${JSON.stringify([[source[0] + 40, source[1] + 30], [700, 300], there])}) await handle.move_to({ window: w, x, y });
+        } finally { await handle.end(); } }`);
       await until(() => same(second().dropped, [payload, payload]) || { second: second().dropped, user: userState().dropped }, 'drag_handle drop');
       expectUserSeat(user.address, cursor, workspace, 'drag_handle');
       expect(same(userState().dropped, []) && same(agentState().dropped, []), `the user's app received a drop: ${JSON.stringify(userState().dropped)}`);
@@ -622,7 +623,8 @@ export default function (test) {
         `await uw.click(${JSON.stringify(centre(agentState().geometry.pad))});`,
         `await uw.scroll(await e2eFind(uw, "Input document", "text"), "down", 1);`,
         `await uw.drag(${JSON.stringify(centre(agentState().geometry.slider))}, [${agentState().geometry.slider[0] + 30}, ${centre(agentState().geometry.slider)[1]}]);`,
-        `await uw.pressKey("End"); await uw.typeText(" end");`,
+        // The slider took the window's focus; back to the entry.
+        `await uw.click(await e2eFind(uw, "Input entry", "text")); await uw.pressKey("End"); await uw.typeText(" end");`,
       ];
       // Pointer positions stay over the user's window: Hyprland's cursor warp
       // focuses the window under it, as the user's click would.
