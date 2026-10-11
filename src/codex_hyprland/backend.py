@@ -415,7 +415,7 @@ class Backend:
             if not c or "x" in p or "y" in p:
                 raise ValueError("An element requires one window and no coordinates")
             self.rendered(c)
-            return self.ax.point(c, text(p["element_id"], "element_id", False))
+            return self.ax.point(c, text(p["element_id"], "element_id", False), reveal=False)
         if c and "x" not in p and "y" not in p:
             return c["size"][0] / 2, c["size"][1] / 2
         origin = self.capture_origins.get(c["address"], (0, 0)) if c else (0, 0)
@@ -511,7 +511,7 @@ class Backend:
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
             self.rendered(c)
-            x, y = self.ax.point(c, ident)
+            x, y = self.ax.point(c, ident, render=lambda: self.rendered(c))
         else:
             x, y = self.location(p, c)
         self.point(c, x, y)
@@ -553,17 +553,24 @@ class Backend:
             pixels = pages * extent
         else:
             pixels = number(p.get("pixels", 500), "pixels")
-        if not 0 < pixels <= 8388607:
-            raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         names = chord(p["key"])[2] if "key" in p else ()
         self.pointer_free()
         x, y = self.location(p, c)
+        axis, extra = pixels, {}
+        if c and not c.get("xwayland"):
+            # Each toolkit scales Wayland scroll input its own way (GTK 3 would
+            # move a list about four pages for one page of input); send what
+            # moves the content by the requested distance.
+            ident = text(p["element_id"], "element_id", False) if "element_id" in p else None
+            axis, extra = self.ax.scroll_input(c, pixels, ident, (x, y), directions[p["direction"]][0] != 0)
+        if not 0 < axis <= 8388607:
+            raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         self.point(c, x, y)
         dx, dy = directions[p["direction"]]
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
             with self.holding(c, names):
-                background.send(c, "scroll", x=x, y=y, dx=dx * pixels, dy=dy * pixels)
+                background.send(c, "scroll", x=x, y=y, dx=dx * axis, dy=dy * axis, **extra)
 
     def drag(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -781,7 +788,7 @@ class Backend:
         if selection not in ("text", "cursor_before", "cursor_after"):
             raise ValueError("Unknown selection type")
         with self.seat(c):
-            self.ax.select_text(c, ident, value, prefix, suffix, selection)
+            self.ax.select_text(c, ident, value, prefix, suffix, selection, render=lambda: self.rendered(c))
 
     def set_value(self, p):
         c = self.target(p.get("window"))
@@ -789,7 +796,24 @@ class Backend:
         value = text(p.get("value"), "value")
         with self.seat(c):
             self.trust.guard_password_field(c, False)
-            self.ax.set_value(c, ident, value)
+            if not self.ax.typed_value(c, ident):
+                self.ax.set_value(c, ident, value, render=lambda: self.rendered(c))
+                return
+            # Rich text (a web page's contenteditable) has text but no
+            # replaceable value: as a user does, focus it, select all of it and
+            # type the value over it.
+            with self.app_action(c):
+                if c.get("xwayland"):
+                    background.send(c, "hold")
+                self.ax.focus_editable(c, ident, restore=False)
+                self.ax.select_all(c, ident)
+            if not value:
+                background.send(c, "key", key="BackSpace", modifiers=[])
+            elif c.get("xwayland") and any(ord(char) > 127 for char in value):
+                self.ax.insert_focused_text(c, value)
+            else:
+                background.type_text(c, value)
+            self.ax.verify_text(c, ident, value, render=lambda: self.rendered(c))
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))
