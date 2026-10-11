@@ -267,9 +267,18 @@ export default function (test) {
       rmSync(file, { force: true });
       const main = await launch('calc', 'codex-e2e-calc-x11', (c) => /LibreOffice Calc|Calc$/.test(c.title));
       expect(main.xwayland, 'Calc is not running under XWayland');
-      // Tab moves right; Return goes to the next row's first column.
+      // Tab enters a cell and moves right; Return goes to the next row's first
+      // column. The Name Box shows the current cell and moves to one typed into
+      // it. (Moving over empty cells with Tab while typing ahead races in Calc:
+      // typed text can land in the cell being left.)
+      const cell = (name) => new RegExp(`^text \\([^)]*settable[^)]*\\) (?:Value: )?${name}(?:,|$)`);
       await js(`${find('calc', /\b(?:table|Sheet1)\b/, { timeout: 60000 })};
-        await calc.typeText("Item\\tQty\\tPrice\\tTotal\\nApples\\t3\\t0.5\\t=B2*C2\\nBread\\t2\\t1.25\\t=B3*C3\\nSum\\t\\t\\t=SUM(D2:D3)\\n");`,
+        await calc.typeText("Item\\tQty\\tPrice\\tTotal\\nApples\\t3\\t0.5\\t=B2*C2\\nBread\\t2\\t1.25\\t=B3*C3\\nSum\\n");
+        await calc.click(${find('calc', cell('A5'), { timeout: 10000 })});
+        await calc.pressKey("ctrl+a"); await calc.typeText("D4\\n");
+        ${find('calc', cell('D4'), { timeout: 10000 })};
+        await calc.typeText("=SUM(D2:D3)\\n");
+        ${find('calc', cell('D5'), { timeout: 10000 })};`,
       { timeout: 90000 });
       const known = addresses();
       await js(`await calc.pressKey("ctrl+shift+s");`);
@@ -306,32 +315,16 @@ export default function (test) {
       const title = () => clients().find((c) => c.title.startsWith('Codex E2E Form'))?.title ?? '';
       await launch('form', 'codex-e2e-firefox', (c) => c.title.startsWith('Codex E2E Form'));
       // Each step's failure is collected, so one run shows the whole form's state.
-      await js(`${find('form', settable('Full name'), { timeout: 45000 })};`);
-      try { // Temporary diagnostic: Firefox's AT-SPI extents.
-        writeFileSync(join(out, 'firefox-extents.txt'), execFileSync('python3', [join(fixtures, 'extents-diag.py'),
-          String(clients().find((c) => c.title.startsWith('Codex E2E Form')).pid), 'Full name', 'Email', 'Country', 'Pro',
-          'Place order', 'Month', 'Codex E2E Form'], { encoding: 'utf8', timeout: 30000 }));
-      } catch (error) { writeFileSync(join(out, 'firefox-extents.txt'), String(error)); }
       const text = await js(`const failed = [];
         const attempt = async (label, run) => { try { await run(); } catch (error) { failed.push(label + ": " + error.message); } };
-        await attempt("setValue name", async () => form.setValue(${find('form', settable('Full name'))}, "Ada Lovelace"));
+        await attempt("setValue name", async () => form.setValue(${find('form', settable('Full name'), { timeout: 45000 })}, "Ada Lovelace"));
         await attempt("type email", async () => { await form.click(${find('form', settable('Email'))}); await form.typeText("ada@example.org"); });
-        // A native select: open its dropdown, then choose from the open list.
+        // A native select, by keyboard: focused, it selects the option typed.
+        // (Its dropdown list does not open in a background window; see the next test.)
         await attempt("country", async () => {
-          const combo = ${find('form', el('combo box', 'Country|Choose…'))};
-          await form.click(combo);
-          try {
-            await form.click(${find('form', item('Japan'), { timeout: 4000, nth: -1 })});
-          } catch {
-            failed.push("country: the dropdown's list did not appear after a click");
-            try { // Diagnostic: does the accessibility action open it?
-              await form.performSecondaryAction(combo, "open");
-              await form.click(${find('form', item('Japan'), { timeout: 4000, nth: -1 })});
-              failed.push("country: its open action showed the list");
-            } catch (error) { failed.push("country: its open action did not show the list either"); }
-            // The focused select takes typed letters.
-            await form.typeText("Japan");
-          }
+          await form.click(${find('form', el('combo box', 'Country|Choose…'))});
+          ${find('form', el('combo box \\([^)]*focused[^)]*\\)', 'Country'), { timeout: 5000 })};
+          await form.typeText("Japan");
         });
         await attempt("radio", async () => form.click(${find('form', el('radio button', 'Pro'))}));
         await attempt("checkbox", async () => form.click(${find('form', el('check box', 'Subscribe to newsletter'))}));
@@ -368,6 +361,23 @@ export default function (test) {
         start: '2026-10-11', seats: '3', priority: '7', notes: 'Ring the bell twice.\nDanke ✓', submits: 1 };
       expect(!failed.length && JSON.stringify(data) === JSON.stringify(expected),
         `${failed.join('\n')}\nsubmitted ${JSON.stringify(data)}\nexpected  ${JSON.stringify(expected)}`);
+    });
+
+  // Known gap, kept as the check for its fix: in a background window Firefox
+  // does not open a <select>'s dropdown list, neither for a click (which
+  // focuses the select) nor for its AT-SPI "open" action, and Hyprland's log
+  // shows it never creates the popup. Its form validation popups do appear.
+  scenario(test, 'Firefox: a select\'s dropdown list opens on a click and its option is chosen from it',
+    blocked('firefox') ?? 'known gap: Firefox does not open a <select> dropdown in a background window', async () => {
+      await retire();
+      const title = () => clients().find((c) => c.title.startsWith('Codex E2E Form'))?.title ?? '';
+      await launch('form', 'codex-e2e-firefox', (c) => c.title.startsWith('Codex E2E Form'));
+      await js(`await form.click(${find('form', el('combo box', 'Country|Choose…'), { timeout: 45000 })});
+        await form.click(${find('form', item('Japan'), { timeout: 5000, nth: -1 })});
+        await form.click(${find('form', el('check box', 'Accept terms'))});
+        await form.setValue(${find('form', settable('Email'))}, "ada@example.org");
+        await form.click(${find('form', button('Place order'))});`, { timeout: 90000 });
+      await until(() => title().includes('"country":"JP"'), 'Japan submitted', 10000);
     });
 
   scenario(test, 'Mousepad: Preferences from the menu bar, settings saved in its config',
