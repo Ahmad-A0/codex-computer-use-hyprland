@@ -275,6 +275,7 @@ export default function (test) {
       await js(`await lifeDlg.click(${find('lifeDlg', BUTTON, 'Open file')});`);
       await until(() => Boolean(one('Codex E2E Life Open File')), 'open dialog', 10000);
       background(one('Codex E2E Life Open File'));
+      const openId = parseInt(one('Codex E2E Life Open File').address, 16);
       // Type the folder's path, as a user does (Ctrl+L, path, Enter), and wait for its files.
       const cell = (name) => JSON.stringify(el('table cell', name));
       await js(`globalThis.lifeOpen = await lifeBind("Codex E2E Life Open File");
@@ -324,6 +325,15 @@ export default function (test) {
       await js(`await lifeDlg.click(${find('lifeDlg', BUTTON, 'Save file')});`);
       await until(() => Boolean(one('Codex E2E Life Save File')), 'save dialog', 10000);
       background(one('Codex E2E Life Save File'));
+      // The closed Open dialog's binding must not reach the Save dialog, even
+      // when Hyprland gives the new dialog the closed one's address (window ID),
+      // as it often does for a window of the same app.
+      const reused = parseInt(one('Codex E2E Life Save File').address, 16) === openId;
+      const stale = await data(`let error = null; try { await lifeOpen.pressKey("Escape"); } catch (e) { error = e.message; }
+        ${write('{ error }')}`);
+      expect(/unavailable|reused/i.test(stale.error ?? ''), `stale Open dialog binding (address reused: ${reused}): ${stale.error}`);
+      expect(one('Codex E2E Life Save File') && !life('codex-e2e-life-dialogs').events.some((e) => e[0] === 'saved-closed'),
+        `Escape sent to the closed Open dialog closed the Save dialog (address reused: ${reused})`);
       // The folder name field appears in a popover (focused, and a new text
       // element in the tree): type the name and press Enter.
       const created = await data(`globalThis.lifeSave = await lifeBind("Codex E2E Life Save File");
@@ -570,19 +580,27 @@ export default function (test) {
     await withTrees('popovers', ['lifeTargets'], async () => {
       await checkTooltip('lifeTargets', 'Codex E2E Life Targets', 'tooltip');
       for (const kind of ['Inline', 'Detached']) {
-        const result = await data(`const opener = ${find('lifeTargets', 'toggle button|(?:push )?button', `${kind} popover`)};
+        const closedBefore = () => life('codex-e2e-life-targets').events.filter((e) => e[0] === 'popover-closed' && e[1] === kind).length;
+        const closings = closedBefore();
+        const opened = await data(`const opener = ${find('lifeTargets', 'toggle button|(?:push )?button', `${kind} popover`)};
           const closed = await lifeTargets.getScreenshot({ emit: false });
           await lifeTargets.getAXState({ emit: false });
           await lifeTargets.click(opener);
           const added = await lifeTargets.getAXState({ emit: false });
           const open = await lifeTargets.getScreenshot({ emit: false });
-          await lifeTargets.setValue(${find('lifeTargets', ENTRY, `${kind} popover entry`)}, "${kind.toLowerCase()} text");
+          ${write('{ added, changed: Buffer.compare(Buffer.from(closed), Buffer.from(open)) !== 0 }')}`);
+        await shot('lifeTargets', `popover-${kind}`);
+        // Click into its entry (a pointer click at the element) and type, as a user would.
+        const result = await data(`await lifeTargets.click(${find('lifeTargets', ENTRY, `${kind} popover entry`)});
+          await lifeTargets.typeText("${kind.toLowerCase()} text");
           await lifeTargets.click(${find('lifeTargets', BUTTON, `${kind} popover action`)});
           await lifeTargets.pressKey("Escape");
           const gone = await lifeTargets.getAXState({ emit: false });
-          ${write('{ added, gone, changed: Buffer.compare(Buffer.from(closed), Buffer.from(open)) !== 0 }')}`);
+          ${write('{ gone }')}`);
+        Object.assign(result, opened);
         const state = life('codex-e2e-life-targets');
         expect(result.changed, `${kind}: the screenshot did not show the popover`);
+        expect(closedBefore() === closings + 1, `${kind}: the popover closed ${closedBefore() - closings} times (clicking into it closed it?)`);
         expect(result.added.split('\n').some((l) => l.startsWith('+\t') && l.includes(`${kind} popover entry`)),
           `${kind}: popover contents were not added to the tree:\n${result.added}`);
         expect(state[`${kind.toLowerCase()}_popover_text`] === `${kind.toLowerCase()} text`, `${kind}: popover entry: ${JSON.stringify(state)}`);
