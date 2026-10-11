@@ -114,6 +114,8 @@ const find = (app, pattern, options = {}) =>
   `(await r2Find(${app}, ${JSON.stringify(pattern.source)}, ${JSON.stringify(pattern.flags)}, ${JSON.stringify(options)}))`;
 /** A line for a role (regex source; '' for menu items, which have none) and an exact name (regex source). */
 const el = (role, name) => new RegExp(`^${role ? `(?:${role}) ` : ''}(?:\\([^)]*\\) )?(?:${name})(?:,|$)`);
+/** A menu item (plain ones are printed without a role). */
+const item = (name) => new RegExp(`^(?:(?:radio |check )?menu item )?(?:\\([^)]*\\) )?(?:${name})(?:,|$)`);
 const button = (name) => el('push button|button|toggle button', name);
 const settable = (name) => new RegExp(`^(?:text|entry|spin button) \\([^)]*settable[^)]*\\)${name === undefined ? '' : ` (?:${name})(?:,|$)`}`);
 /** An editable field by its current value (a lone value is printed without its "Value: " title). */
@@ -205,7 +207,7 @@ export default function (test) {
         'new folder on disk', 10000);
       // Rename through the file's context menu and the rename popover.
       await js(`await files.click(${find('files', /draft-report\.txt/)}, { mouseButton: "right" });
-        await files.click(${find('files', el('', 'Rename…|Rename\\.\\.\\.|Rename'), { timeout: 5000, nth: -1 })});
+        await files.click(${find('files', item('Rename…|Rename\\.\\.\\.|Rename'), { timeout: 5000, nth: -1 })});
         await files.setValue(${find('files', holding('draft-report\\.txt'), { timeout: 5000 })}, "final-report.txt");
         await files.click(${find('files', button('Rename'), { timeout: 5000, enabled: true })});`, { timeout: 30000 });
       await until(() => read(join(dir, 'final-report.txt')) === 'quarterly numbers\n' && !existsSync(join(dir, 'draft-report.txt')),
@@ -231,7 +233,7 @@ export default function (test) {
         // The heading: caret into the first paragraph, then Styles > Heading 1.
         await writer.pressKey("ctrl+Home");
         await writer.click(${find('writer', el('menu', 'Styles'), { timeout: 5000 })});
-        await writer.click(${find('writer', el('', 'Heading 1'), { timeout: 5000, nth: -1 })});
+        await writer.click(${find('writer', item('Heading 1'), { timeout: 5000, nth: -1 })});
         // Bold: select a word by its text, then the toolbar's Bold button.
         await writer.selectText(${find('writer', /Revenue grew strongly this year\./)}, "strongly");
         await writer.click(${find('writer', button('Bold'), { timeout: 5000 })});`, { timeout: 120000 });
@@ -274,8 +276,11 @@ export default function (test) {
       // The file type decides the format, not the name: choose it in the
       // file type list (a closed list shows no items), then name the file.
       await js(`await saveas.click(${find('saveas', /^combo box\b.*\(\.ods\)/, { timeout: 10000 })});
-        await saveas.click(${find('saveas', el('', 'Text CSV \\(\\.csv\\)'), { timeout: 5000, nth: -1 })});
-        await saveas.setValue(${find('saveas', settable('Name'), { timeout: 10000 })}, ${JSON.stringify(file)});
+        await saveas.click(${find('saveas', item('Text CSV \\(\\.csv\\)'), { timeout: 5000, nth: -1 })});
+        // LibreOffice then gives the default name the type's extension; name the file after that.
+        ${find('saveas', holding('.*\\.csv'), { timeout: 10000 })};
+        await saveas.setValue(${find('saveas', settable('Name'))}, ${JSON.stringify(file)});
+        ${find('saveas', holding(file.replace(/[.]/g, '\\.')), { timeout: 3000 })};
         await saveas.click(${find('saveas', button('Save'), { enabled: true })});`, { timeout: 30000 });
       // LibreOffice asks whether to keep the non-ODF format. (The new dialog
       // may take the closed Save dialog's address: find it by its title.)
@@ -300,32 +305,48 @@ export default function (test) {
       await retire();
       const title = () => clients().find((c) => c.title.startsWith('Codex E2E Form'))?.title ?? '';
       await launch('form', 'codex-e2e-firefox', (c) => c.title.startsWith('Codex E2E Form'));
-      // setValue failures are collected so one run shows the whole form's state.
+      // Each step's failure is collected, so one run shows the whole form's state.
+      await js(`${find('form', settable('Full name'), { timeout: 45000 })};`);
+      try { // Temporary diagnostic: Firefox's AT-SPI extents.
+        writeFileSync(join(out, 'firefox-extents.txt'), execFileSync('python3', [join(fixtures, 'extents-diag.py'),
+          String(clients().find((c) => c.title.startsWith('Codex E2E Form')).pid), 'Full name', 'Email', 'Country', 'Pro',
+          'Place order', 'Month', 'Codex E2E Form'], { encoding: 'utf8', timeout: 30000 }));
+      } catch (error) { writeFileSync(join(out, 'firefox-extents.txt'), String(error)); }
       const text = await js(`const failed = [];
         const attempt = async (label, run) => { try { await run(); } catch (error) { failed.push(label + ": " + error.message); } };
-        await attempt("setValue name", async () => form.setValue(${find('form', settable('Full name'), { timeout: 45000 })}, "Ada Lovelace"));
-        await form.click(${find('form', settable('Email'))}); await form.typeText("ada@example.org");
+        await attempt("setValue name", async () => form.setValue(${find('form', settable('Full name'))}, "Ada Lovelace"));
+        await attempt("type email", async () => { await form.click(${find('form', settable('Email'))}); await form.typeText("ada@example.org"); });
         // A native select: open its dropdown, then choose from the open list.
-        await form.click(${find('form', el('combo box', 'Country|Choose…'))});
-        await form.click(${find('form', el('', 'Japan'), { timeout: 5000, nth: -1 })});
-        await form.click(${find('form', el('radio button', 'Pro'))});
-        await form.click(${find('form', el('check box', 'Subscribe to newsletter'))});
+        await attempt("country", async () => {
+          await form.click(${find('form', el('combo box', 'Country|Choose…'))});
+          await form.click(${find('form', item('Japan'), { timeout: 5000, nth: -1 })});
+        });
+        await attempt("radio", async () => form.click(${find('form', el('radio button', 'Pro'))}));
+        await attempt("checkbox", async () => form.click(${find('form', el('check box', 'Subscribe to newsletter'))}));
         await attempt("setValue seats", async () => form.setValue(${find('form', el('spin button|entry', 'Seats'))}, "3"));
         await attempt("setValue priority", async () => form.setValue(${find('form', el('slider', 'Priority'))}, "7"));
-        await form.click(${find('form', settable('Delivery notes'))});
-        await form.typeText("Ring the bell twice.\\nDanke ✓");
+        await attempt("textarea", async () => {
+          await form.click(${find('form', settable('Delivery notes'))});
+          await form.typeText("Ring the bell twice.\\nDanke ✓");
+        });
         // The date's month field, then its digits as a user types them.
-        await form.click(${find('form', el('spin button', '[Mm]onth.*'))});
-        await form.typeText("10112026");
-        await form.pressKey("Escape");
+        await attempt("date", async () => {
+          await form.click(${find('form', el('spin button', '[Mm]onth.*'))});
+          await form.typeText("10112026");
+          await form.pressKey("Escape");
+        });
         await nodeRepl.write("R2FAILED" + JSON.stringify(failed));`, { timeout: 90000 });
       const failed = JSON.parse(text.slice(text.indexOf('R2FAILED') + 8));
-      // Terms are required: the browser refuses the submission first.
-      await js(`await form.click(${find('form', button('Place order'))});`);
-      await until(() => title().startsWith('Codex E2E Form|invalid:terms'), 'submission refused without terms', 10000);
-      await js(`await form.click(${find('form', el('check box', 'Accept terms'))});
-        await form.click(${find('form', button('Place order'))});`);
-      await until(() => title().startsWith('Codex E2E Form|submitted|'), 'form submitted', 10000);
+      try {
+        // Terms are required: the browser refuses the submission first.
+        await js(`await form.click(${find('form', button('Place order'))});`);
+        await until(() => title().startsWith('Codex E2E Form|invalid:terms'), 'submission refused without terms', 10000);
+        await js(`await form.click(${find('form', el('check box', 'Accept terms'))});
+          await form.click(${find('form', button('Place order'))});`);
+        await until(() => title().startsWith('Codex E2E Form|submitted|'), 'form submitted', 10000);
+      } catch (error) {
+        throw new Error(`${failed.join('\n')}\n${error.message}`);
+      }
       const json = title().slice('Codex E2E Form|submitted|'.length).replace(/ [—-] Mozilla Firefox$/, '');
       const data = JSON.parse(json);
       const expected = { name: 'Ada Lovelace', email: 'ada@example.org', country: 'JP', plan: 'pro', news: 'yes', terms: 'yes',
@@ -341,11 +362,11 @@ export default function (test) {
       const main = await launch('pad', 'codex-e2e-mousepad-prefs', (c) => c.class === 'org.xfce.mousepad');
       const known = addresses();
       await js(`await pad.click(${find('pad', el('menu', 'Edit'), { timeout: 20000 })});
-        await pad.click(${find('pad', el('', 'Preferences.*'), { timeout: 5000, nth: -1 })});`);
+        await pad.click(${find('pad', item('Preferences.*'), { timeout: 5000, nth: -1 })});`);
       await opened('prefs', main.pid, known, /Preferences/i);
       await js(`await prefs.click(${find('prefs', el('check box', '.*[Ll]ine numbers.*'), { timeout: 10000 })});
         await prefs.click(${find('prefs', el('page tab', 'Editor'))});
-        await prefs.setValue(${find('prefs', el('spin button', '.*[Tt]ab width.*'), { timeout: 5000 })}, "3");
+        await prefs.setValue(${find('prefs', /^spin button \([^)]*settable[^)]*\) Value: 8(?:,|$)/, { timeout: 5000 })}, "3");
         await prefs.click(${find('prefs', button('Close'))});`, { timeout: 30000 });
       await until(() => !clients().some((c) => c.pid === main.pid && /Preferences/i.test(c.title)), 'preferences closed', 10000);
       await until(() => /show-line-numbers=true/.test(read(keyfile) ?? '') && /tab-width=(?:uint32 )?3\b/.test(read(keyfile)),

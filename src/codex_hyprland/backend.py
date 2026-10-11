@@ -15,7 +15,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from .accessibility import Accessibility, LAUNCH_ENVIRONMENT
+from .accessibility import Accessibility, LAUNCH_ENVIRONMENT, TextNotRetained
 from . import background, session, desktop, guards
 
 
@@ -792,7 +792,25 @@ class Backend:
             # Under the app's keyboard focus, so that a field set_value has to
             # focus (Firefox) takes it as in an active window.
             with self.app_action(c):
-                self.ax.set_value(c, ident, value)
+                try:
+                    self.ax.set_value(c, ident, value)
+                    return
+                except TextNotRetained as ignored:
+                    if not ignored.focused:
+                        raise
+                    obj = ignored.obj
+                # Firefox ignores AT-SPI text replacement in web pages: replace
+                # the focused field's text as a user does, select all and type.
+                self.trust.guard_password_field(c, False)
+                background.send(c, "key", key="a", modifiers=["Control"])
+                if not value:
+                    background.send(c, "key", key="BackSpace", modifiers=[])
+                elif c.get("xwayland") and any(ord(char) > 127 for char in value):
+                    self.ax.insert_focused_text(c, value)
+                else:
+                    background.type_text(c, value)
+                if not self.ax.retained(obj, value, timeout=2.0):
+                    raise RuntimeError("Application did not retain the replacement value")
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))

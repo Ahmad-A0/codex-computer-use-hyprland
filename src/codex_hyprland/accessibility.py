@@ -36,6 +36,14 @@ MENU_ROLES = ("popup menu", "menu")
 SHOWN_CHILDREN_ROLES = ("popup menu", "menu", "combo box")
 
 
+class TextNotRetained(RuntimeError):
+    """A text replacement the application ignored; obj is the field, focused if it took focus."""
+
+    def __init__(self, obj, focused):
+        super().__init__('Application did not retain the replacement value')
+        self.obj, self.focused = obj, focused
+
+
 def enable_session_accessibility():
     """Set the session-wide AT-SPI flag that Chromium, Electron and Firefox read
     before exposing a tree. macOS apps answer AX clients without this step.
@@ -650,7 +658,7 @@ class Accessibility:
                 if (self.api.EditableText.set_text_contents(obj, value)
                         and self.retained(obj, value)):
                     return
-            raise RuntimeError('Application did not retain the replacement value')
+            raise TextNotRetained(obj, focused())
         if obj.is_value():
             try:
                 numeric = float(value)
