@@ -32,6 +32,14 @@ runs:
       with:
         path: ~/.cache/codex-hyprland-e2e/base
         key: e2e-base-${{ steps.keys.outputs.base }}
+    # E2E_HYPRLAND=git compiles Hyprland when no provisioned disk is cached:
+    # start from the newest compiler cache.
+    - if: inputs.save != 'true' && env.E2E_HYPRLAND == 'git' && steps.ready.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/codex-hyprland-e2e/ccache
+        key: e2e-ccache-${{ github.run_id }}
+        restore-keys: e2e-ccache-
     # Keys of the images present, which ./test names after their contents.
     - if: inputs.save == 'true'
       id: built
@@ -43,6 +51,7 @@ runs:
         [ -z "$f" ] || echo "ready=${f%.qcow2}" >> "$GITHUB_OUTPUT"
         f=$(ls "$c"/base/arch-cloudimg-*.qcow2 2>/dev/null || true); f=${f##*/arch-cloudimg-}
         [ -z "$f" ] || echo "base=${f%.qcow2}" >> "$GITHUB_OUTPUT"
+        [ ! -f "$c/ccache.updated" ] || echo "ccache=true" >> "$GITHUB_OUTPUT"
     - if: inputs.save == 'true' && steps.built.outputs.ready != ''
       uses: actions/cache/save@v6
       continue-on-error: true
@@ -55,3 +64,10 @@ runs:
       with:
         path: ~/.cache/codex-hyprland-e2e/base
         key: e2e-base-${{ steps.built.outputs.base }}
+    # The compiler cache a git build left (run.sh marks it updated).
+    - if: inputs.save == 'true' && steps.built.outputs.ccache == 'true'
+      uses: actions/cache/save@v6
+      continue-on-error: true
+      with:
+        path: ~/.cache/codex-hyprland-e2e/ccache
+        key: e2e-ccache-${{ github.run_id }}-${{ github.run_attempt }}

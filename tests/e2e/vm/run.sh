@@ -12,7 +12,7 @@
 #                    the cloud image, ready/ the provisioned disk (one per
 #                    E2E_HYPRLAND variant), rebuilt daily, when provisioning
 #                    changes or, for git, for each new Hyprland commit. Tests run
-#                    on a throwaway overlay.
+#                    on a throwaway overlay. ccache/ holds git's compiler cache.
 #   E2E_REPROVISION  set to rebuild the provisioned disk
 #   E2E_VM_CPUS, E2E_VM_MEMORY  guest CPUs and MiB (default 2 and 4608; the git
 #                    variant provisions with all host CPUs and spare memory)
@@ -167,9 +167,21 @@ else
   boot "$base" -provision
   mark boot-provision
   tar -C "$here" -cf - provision.sh hyprland-git.sh hyprland.lua openai-chatgpt.gpg | vm 'mkdir -p ~/provision && tar -C ~/provision -xf -'
+  if [ "$variant" = git ] && [ -d "$cache/ccache" ]; then
+    tar -C "$cache/ccache" -cf - . | vm 'sudo mkdir -p /var/tmp/hyprland-ccache && sudo tar -C /var/tmp/hyprland-ccache -xf -'
+    mark ccache-in
+  fi
   vm "sudo sh ~/provision/provision.sh $user $variant $commit && rm -rf ~/provision" > "$artifacts/provision.log" 2>&1 ||
     { tail -50 "$artifacts/provision.log"; exit 1; }
   mark provision
+  if [ "$variant" = git ]; then
+    # Out of the guest before sealing, so the provisioned disk doesn't carry it.
+    rm -rf "$cache/ccache.part"; mkdir -p "$cache/ccache.part"
+    vm 'sudo tar -C /var/tmp/hyprland-ccache -cf - . && sudo rm -rf /var/tmp/hyprland-ccache && sync && sudo fstrim -a >&2' |
+      tar -C "$cache/ccache.part" -xf -
+    rm -rf "$cache/ccache"; mv "$cache/ccache.part" "$cache/ccache"; touch "$cache/ccache.updated"
+    mark ccache-out
+  fi
   halt
   vm_cpus=${E2E_VM_CPUS:-2} vm_memory=${E2E_VM_MEMORY:-4608}
   rm -f "$cache"/ready/$stale

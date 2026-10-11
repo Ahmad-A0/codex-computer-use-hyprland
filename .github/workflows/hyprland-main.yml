@@ -49,6 +49,26 @@ jobs:
       hyprland: git
     secrets: inherit
 
+  # Each day's provisioned disk and compiler cache supersede the last; drop
+  # older ones so they don't push the release image out of the cache quota.
+  prune:
+    needs: test
+    if: always() && needs.test.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: |
+          for prefix in e2e-ready-git- e2e-ccache-; do
+            gh cache list --key "$prefix" --sort created_at --order desc --limit 100 --json id,key \
+              --jq '.[1:][] | "\(.id) \(.key)"' | while read -r id key; do
+              echo "Deleting $key"; gh cache delete "$id"
+            done
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
   record:
     needs: [check, test]
     if: needs.check.outputs.changed == 'true' && needs.test.result == 'success'

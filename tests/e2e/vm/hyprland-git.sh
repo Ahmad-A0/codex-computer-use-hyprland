@@ -8,7 +8,9 @@
 # hyprwm libraries are built from git only when main needs a newer version than
 # Arch ships (or links against one that is rebuilt), at the revisions pinned in
 # Hyprland's flake.lock, which upstream's CI builds with. What was built is
-# recorded in /var/lib/codex-e2e/hyprland.json.
+# recorded in /var/lib/codex-e2e/hyprland.json. Compiles go through ccache in
+# /var/tmp/hyprland-ccache, which run.sh carries between runs: main changes a
+# few files a day, so most of the build is cache hits.
 #   hyprland-git.sh COMMIT
 set -eu
 commit=$1
@@ -19,7 +21,11 @@ started=$(date +%s)
 
 # Arch's make dependencies of hyprland.
 retry pacman -S --noconfirm --needed --noprogressbar \
-  git cmake ninja meson python glaze hyprland-protocols hyprwayland-scanner xorgproto
+  git cmake ninja meson python glaze hyprland-protocols hyprwayland-scanner xorgproto ccache
+# Sources are checked out fresh at fixed paths each run: hash contents, not times.
+export CCACHE_DIR=/var/tmp/hyprland-ccache CCACHE_MAXSIZE=3G \
+  CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime,time_macros
+ccache -z >/dev/null
 
 # A compiler job of Hyprland peaks around 1.5 GB; zram absorbs the rest.
 mem=$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)
@@ -128,7 +134,8 @@ configure() {
   dir=$1; shift
   for attempt in 1 2 3 4; do
     if cmake -S "$dir" -B "$dir/build" -G Ninja -W no-dev -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF "$@" > "$dir/configure.log" 2>&1; then
+      -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF \
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "$@" > "$dir/configure.log" 2>&1; then
       return
     fi
     # CMake lists them as "   - name>=version" after this line (optional
@@ -179,4 +186,5 @@ for line in open(sys.argv[2]):
 print(json.dumps(versions))
 EOF
 cat "$record"
+ccache -s | grep -iE 'hits|misses|cache size' || true
 echo "Hyprland from git built in $(( $(date +%s) - started ))s (build tree $(du -sh "$work" | cut -f 1), removed)"
