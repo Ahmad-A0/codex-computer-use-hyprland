@@ -127,7 +127,9 @@ for name in order:
 EOF
 cat "$work/plan"
 
-# Configure DIR [cmake args]; installs Arch packages for pkg-config modules the
+# Configure DIR [cmake args]. C++20 and later make CMake scan sources for
+# modules, which none of these use and whose flags ccache can't cache.
+# Installs Arch packages for pkg-config modules the
 # configure step reports missing (dependencies newer than the package's).
 filesdb=
 configure() {
@@ -135,7 +137,8 @@ configure() {
   for attempt in 1 2 3 4; do
     if cmake -S "$dir" -B "$dir/build" -G Ninja -W no-dev -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_TESTING=OFF \
-      -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "$@" > "$dir/configure.log" 2>&1; then
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+      "$@" > "$dir/configure.log" 2>&1; then
       return
     fi
     # CMake lists them as "   - name>=version" after this line (optional
@@ -188,5 +191,5 @@ for line in open(sys.argv[2]):
 print(json.dumps(versions))
 EOF
 cat "$record"
-ccache -s | grep -iE 'hits|misses|cache size' || true
+ccache -sv | grep -iE 'hits|misses|uncacheable|unsupported|cache size' || true
 echo "Hyprland from git built in $(( $(date +%s) - started ))s (build tree $(du -sh "$work" | cut -f 1), removed)"
