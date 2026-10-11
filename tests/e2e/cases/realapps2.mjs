@@ -123,19 +123,24 @@ const holding = (value) => new RegExp(`^(?:text|entry) \\([^)]*settable[^)]*\\) 
 // launched, closed when the next of its tests starts.
 const bound = new Set();
 const launched = [];
-function retire() {
-  for (const pid of launched.splice(0)) try { process.kill(pid, 'SIGKILL'); } catch {}
+async function retire() {
+  const pids = launched.splice(0).filter(Boolean);
+  for (const pid of pids) try { process.kill(pid, 'SIGKILL'); } catch {}
+  await until(() => !clients().some((c) => pids.includes(c.pid)), 'earlier apps closed', 10000);
 }
+// Hyprland reuses a closed window's address, so a window is its address and owner.
+const key = (c) => `${c.address}/${c.pid}`;
+const addresses = () => new Set(clients().map(key));
 async function bindWindow(variable, c) {
   await js(`globalThis.${variable} = await cua.getApp({ windowId: ${windowId(c)} });`, { timeout: 60000 });
   bound.add(variable);
 }
 /** launch_app, then bind the new window, as for apps whose window class differs from their entry. */
 async function launch(variable, id, match, timeout = 90000) {
-  const before = new Set(clients().map((c) => c.address));
+  const before = addresses();
   await js(`await cua.computer.launch_app({ app: ${JSON.stringify(`${id}.desktop`)} });`);
   let found;
-  await until(() => Boolean(found = clients().find((c) => !before.has(c.address) && match(c))), `${id} window`, timeout);
+  await until(() => Boolean(found = clients().find((c) => !before.has(key(c)) && match(c))), `${id} window`, timeout);
   launched.push(found.pid);
   await bindWindow(variable, found);
   return found;
@@ -143,12 +148,11 @@ async function launch(variable, id, match, timeout = 90000) {
 /** A window the app opened itself (a dialog), found as a user sees it appear. */
 async function opened(variable, pid, known, title = /./, timeout = 20000) {
   let found;
-  await until(() => Boolean(found = clients().find((c) => c.pid === pid && !known.has(c.address) && title.test(c.title))),
+  await until(() => Boolean(found = clients().find((c) => c.pid === pid && !known.has(key(c)) && title.test(c.title))),
     `new window ${title} of ${pid} (have: ${JSON.stringify(clients().map((c) => [c.pid, c.class, c.title]))})`, timeout);
   await bindWindow(variable, found);
   return found;
 }
-const addresses = () => new Set(clients().map((c) => c.address));
 const read = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null);
 
 /** A test that saves the full trees of its windows when it fails. */
@@ -180,7 +184,7 @@ function scenario(test, name, needs, run) {
 export default function (test) {
   scenario(test, 'Nautilus (GTK 4): new folder dialog, rename from the context menu and with F2',
     blocked('nautilus', { id: 'codex-e2e-nautilus', bus: 'org.gnome.Nautilus' }), async () => {
-      retire();
+      await retire();
       const dir = join(base, 'files');
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true });
@@ -189,7 +193,7 @@ export default function (test) {
       const before = addresses();
       await bind('files', 'codex-e2e-nautilus.desktop', { timeout: 60000 });
       bound.add('files');
-      launched.push(clients().find((c) => c.class === 'org.gnome.Nautilus' && !before.has(c.address))?.pid);
+      launched.push(clients().find((c) => c.class === 'org.gnome.Nautilus' && !before.has(key(c)))?.pid);
       await js(`${find('files', /draft-report\.txt/, { timeout: 30000 })};`);
       // A new folder through the app's in-window dialog.
       await js(`await files.pressKey("ctrl+shift+n");
@@ -217,7 +221,7 @@ export default function (test) {
 
   scenario(test, 'LibreOffice Writer: heading from the menu bar, bold from the toolbar, Save As .odt',
     blocked('soffice'), async () => {
-      retire();
+      await retire();
       const file = join(docs, 'report.odt');
       rmSync(file, { force: true });
       const main = await launch('writer', 'codex-e2e-writer', (c) => /LibreOffice Writer|Writer$/.test(c.title));
@@ -255,7 +259,7 @@ export default function (test) {
 
   scenario(test, 'LibreOffice Calc (XWayland): cells and formulas, Save As CSV with the file type and format dialogs',
     blocked('soffice'), async () => {
-      retire();
+      await retire();
       const file = join(docs, 'budget.csv');
       rmSync(file, { force: true });
       const main = await launch('calc', 'codex-e2e-calc-x11', (c) => /LibreOffice Calc|Calc$/.test(c.title));
@@ -267,9 +271,11 @@ export default function (test) {
       let known = addresses();
       await js(`await calc.pressKey("ctrl+shift+s");`);
       await opened('saveas', main.pid, known, /Save/i);
-      // The file type decides the format, not the name: choose it, then name the file.
+      // The file type decides the format, not the name: choose it in the
+      // file type list (a closed list shows no items), then name the file.
       known = addresses();
-      await js(`await saveas.click(${find('saveas', /Text CSV \(\.csv\)/, { timeout: 10000 })});
+      await js(`await saveas.click(${find('saveas', /^combo box\b.*\(\.ods\)/, { timeout: 10000 })});
+        await saveas.click(${find('saveas', el('', 'Text CSV \\(\\.csv\\)'), { timeout: 5000, nth: -1 })});
         await saveas.setValue(${find('saveas', settable('Name'), { timeout: 10000 })}, ${JSON.stringify(file)});
         await saveas.click(${find('saveas', button('Save'), { enabled: true })});`, { timeout: 30000 });
       // LibreOffice asks whether to keep the non-ODF format.
@@ -278,7 +284,7 @@ export default function (test) {
       // Depending on settings, the CSV export options follow; accept them.
       let options;
       await until(() => existsSync(file) || Boolean(options = clients().find((c) => c.pid === main.pid
-        && !known.has(c.address) && /Export Text File|Text Export/i.test(c.title))), 'CSV written or export options', 20000);
+        && !known.has(key(c)) && /Export Text File|Text Export/i.test(c.title))), 'CSV written or export options', 20000);
       if (!existsSync(file)) {
         await bindWindow('csvopts', options);
         await js(`await csvopts.click(${find('csvopts', button('OK'), { timeout: 10000 })});`);
@@ -291,7 +297,7 @@ export default function (test) {
 
   scenario(test, 'Firefox: fill a form (select, radio, checkboxes, date, number, range, textarea) and submit',
     blocked('firefox'), async () => {
-      retire();
+      await retire();
       const title = () => clients().find((c) => c.title.startsWith('Codex E2E Form'))?.title ?? '';
       await launch('form', 'codex-e2e-firefox', (c) => c.title.startsWith('Codex E2E Form'));
       await js(`const name = ${find('form', settable('Full name'), { timeout: 45000 })};
@@ -326,7 +332,7 @@ export default function (test) {
 
   scenario(test, 'Mousepad: Preferences from the menu bar, settings saved in its config',
     blocked('mousepad'), async () => {
-      retire();
+      await retire();
       rmSync(keyfile, { force: true });
       const main = await launch('pad', 'codex-e2e-mousepad-prefs', (c) => c.class === 'org.xfce.mousepad');
       const known = addresses();
@@ -344,7 +350,7 @@ export default function (test) {
 
   scenario(test, 'GNOME Text Editor (GTK 4): find and replace all in an existing file, then save',
     blocked('gnome-text-editor', { bus: 'org.gnome.TextEditor' }), async () => {
-      retire();
+      await retire();
       const file = join(docs, 'letter.txt');
       const original = 'Dear team,\nThe colour of the logo and the colour of the banner should match.\nKeep the colourful header.\n';
       writeFileSync(file, original);
@@ -361,7 +367,7 @@ export default function (test) {
 
   scenario(test, 'FeatherPad (Qt 6): Save As through the Qt file dialog, then save again',
     blocked('featherpad'), async () => {
-      retire();
+      await retire();
       const file = join(docs, 'qt-notes.txt');
       rmSync(file, { force: true });
       const main = await launch('feather', 'codex-e2e-featherpad', (c) => /featherpad/i.test(`${c.class} ${c.title}`));
@@ -374,7 +380,8 @@ export default function (test) {
         await qtsave.click(${find('qtsave', button('Save'), { enabled: true })});`, { timeout: 30000 });
       await until(() => (read(file) ?? '').replace(/\n$/, '') === 'Grüße aus Qt\nZeile zwei ✓', 'file saved through the dialog', 10000);
       // The document now has a name: a plain save writes it, no dialog.
-      await js(`await feather.pressKey("ctrl+End"); await feather.typeText("\\nDritte"); await feather.pressKey("ctrl+s");`);
-      await until(() => (read(file) ?? '').replace(/\n$/, '') === 'Grüße aus Qt\nZeile zwei ✓\nDritte', 'file saved again', 10000);
+      // (FeatherPad ends a saved document with a newline.)
+      await js(`await feather.pressKey("ctrl+End"); await feather.typeText("Dritte"); await feather.pressKey("ctrl+s");`);
+      await until(() => read(file) === 'Grüße aus Qt\nZeile zwei ✓\nDritte\n', 'file saved again', 10000);
     });
 }

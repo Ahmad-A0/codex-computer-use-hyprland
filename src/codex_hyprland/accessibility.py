@@ -28,6 +28,11 @@ LABELLED_ROLES = ("menu item", "check menu item", "radio menu item", "text", "en
 # context menu hangs below an object its entry does not list as a child.
 POPUP_EVENT_ROLES = ("popup menu", "menu", "window")
 MENU_ROLES = ("popup menu", "menu")
+# Containers whose children belong to the tree only while shown. As on macOS,
+# a closed menu's items appear when it opens; GTK 3 lists every item of a
+# closed menu bar, which in LibreOffice (about 1,300) exhausts the node budget
+# before the document is reached.
+SHOWN_CHILDREN_ROLES = ("popup menu", "menu", "combo box")
 
 
 def enable_session_accessibility():
@@ -391,7 +396,7 @@ class Accessibility:
         limit = 1500
         truncated = False
 
-        def walk(obj, depth=0, popup=False, offset=None):
+        def walk(obj, depth=0, popup=False, offset=None, shown_only=False):
             nonlocal truncated
             if len(seen) >= limit or depth > 40 or time.monotonic() > deadline:
                 truncated = True
@@ -399,11 +404,13 @@ class Accessibility:
             ident = self.identity(obj)
             if ident in seen:
                 return None
-            seen.add(ident)
             obj.clear_cache()
             states = obj.get_state_set()
             if states.contains(self.api.StateType.DEFUNCT):
                 return None
+            if shown_only and not states.contains(self.api.StateType.SHOWING):
+                return None  # An item of a closed menu; not counted against the budget.
+            seen.add(ident)
             role = obj.get_role_name()
             node = {"id": ident, "role": role, "name": self.name(obj, role),
                     "states": [], "actions": [], "children": []}
@@ -418,7 +425,7 @@ class Accessibility:
             if "sensitive" in node["states"] and "enabled" not in node["states"]:
                 node["states"].append("enabled")
             if obj.is_action():
-                node["actions"] = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
+                node["actions"] = [name for name in self.action_names(obj) if name]
             if role != "password text" and obj.is_text():
                 node["value"] = self.api.Text.get_text(obj, 0, min(obj.get_character_count(), 4000))
             elements[ident] = (obj, role, node["name"])
@@ -427,7 +434,7 @@ class Accessibility:
             for i in range(min(obj.get_child_count(), 1500)):
                 child = obj.get_child_at_index(i)
                 if child is not None:
-                    item = walk(child, depth + 1, popup, offset)
+                    item = walk(child, depth + 1, popup, offset, role in SHOWN_CHILDREN_ROLES)
                     if item is not None:
                         node["children"].append(item)
                 if truncated:
@@ -466,6 +473,22 @@ class Accessibility:
         self.elements[wid] = elements
         self.offsets[wid] = offsets
         return tree, "at_spi"
+
+    @staticmethod
+    def action_names(obj):
+        """Action names by index; "" where the toolkit cannot name one.
+
+        GTK 4 can count actions it then fails to name ("No action with index
+        0", seen on Nautilus and GNOME Text Editor widgets); one such element
+        must not fail the whole observation or hide the others' actions."""
+        from gi.repository import GLib
+        names = []
+        for index in range(obj.get_n_actions()):
+            try:
+                names.append(obj.get_action_name(index) or "")
+            except GLib.Error:
+                names.append("")
+        return names
 
     def resolve(self, client, ident):
         found = self.elements.get(client["address"], {}).get(ident)
@@ -523,8 +546,8 @@ class Accessibility:
         # links. It is a primary action, unlike an entry's "activate" action.
         if button == "left" and obj.get_role_name() == "link":
             names = (*names, "jump")
-        actions = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
-        found = [name for name in actions if name.casefold() in names]
+        actions = self.action_names(obj)
+        found = [name for name in actions if name and name.casefold() in names]
         if len(found) > 1:
             raise ValueError("Ambiguous primary accessibility action")
         return found[0] if found else None
@@ -533,7 +556,7 @@ class Accessibility:
         obj = self.resolve(client, ident)
         if not obj.is_action():
             raise ValueError("Element exposes no accessibility actions")
-        actions = [obj.get_action_name(i) for i in range(obj.get_n_actions())]
+        actions = self.action_names(obj)
         if name is None:
             names = ("click", "press", "activate", "dodefault") if button == "left" else ("showcontextmenu", "show context menu", "menu")
             found = [i for i, a in enumerate(actions) if a.casefold() in names]
@@ -594,11 +617,22 @@ class Accessibility:
             if not self.api.EditableText.set_text_contents(obj, value):
                 raise RuntimeError('Application refused the replacement value')
             # Password fields must not be read back or included in diagnostics.
-            if obj.get_role_name() != 'password text' and obj.is_text():
-                actual = self.api.Text.get_text(obj, 0, obj.get_character_count())
-                if actual != value:
-                    raise RuntimeError('Application did not retain the replacement value')
-            return
+            if obj.get_role_name() == 'password text' or not obj.is_text():
+                return
+            if self.retained(obj, value):
+                return
+            # Firefox applies the change in its content process, so it shows up
+            # late, and only to a field whose editor exists, which it creates
+            # when the field is first focused: focus the field and set it again.
+            focused = lambda: (obj.clear_cache(), obj.get_state_set().contains(self.api.StateType.FOCUSED))[1]
+            if not focused() and obj.is_component() and obj.grab_focus():
+                deadline = time.monotonic() + .6
+                while not focused() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                if (self.api.EditableText.set_text_contents(obj, value)
+                        and self.retained(obj, value)):
+                    return
+            raise RuntimeError('Application did not retain the replacement value')
         if obj.is_value():
             try:
                 numeric = float(value)
@@ -612,6 +646,17 @@ class Accessibility:
                 raise RuntimeError('Application did not retain the numeric value')
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
+
+    def retained(self, obj, value, timeout=1.0):
+        """Whether a text element shows value, allowing for apps that update it asynchronously."""
+        deadline = time.monotonic() + timeout
+        while True:
+            obj.clear_cache()
+            if self.api.Text.get_text(obj, 0, obj.get_character_count()) == value:
+                return True
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(.05)
 
     def viewport(self, client, ident, horizontal=False):
         """Measure the nearest visible scroll viewport, clipped to the window."""
