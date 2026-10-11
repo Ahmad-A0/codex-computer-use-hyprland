@@ -549,7 +549,29 @@ class Accessibility:
                 raise ValueError("This menu element's position is unknown; use its accessibility action or screenshot coordinates")
             x, y, scale = offsets[ident]
             return x + (rect.x + rect.width / 2) / scale, y + (rect.y + rect.height / 2) / scale
-        return rect.x + rect.width / 2, rect.y + rect.height / 2
+        dx, dy = self.subwindow_offset(client, obj)
+        return dx + rect.x + rect.width / 2, dy + rect.y + rect.height / 2
+
+    def subwindow_offset(self, client, obj):
+        """Where an element's own window lies in its toplevel.
+
+        GTK 3 reports WINDOW extents of a popover's contents relative to the
+        popover, not to the window it is drawn in, so the Create Folder field
+        of a file chooser seemed to lie over the window's top-left controls.
+        SCREEN extents of the element and of its toplevel share one origin
+        (also where it is a false zero on Wayland): their SCREEN-minus-WINDOW
+        differences give the offset, which is zero for ordinary widgets."""
+        root = self.root(client)
+        if root is None:
+            return 0, 0
+        try:
+            inner, outer = obj.get_extents(self.api.CoordType.SCREEN), obj.get_extents(self.api.CoordType.WINDOW)
+            top, base = root.get_extents(self.api.CoordType.SCREEN), root.get_extents(self.api.CoordType.WINDOW)
+        except Exception:
+            return 0, 0
+        if any(abs(v) >= 1 << 30 for r in (inner, outer, top, base) for v in (r.x, r.y)):
+            return 0, 0  # Toolkits report G_MININT for what they do not draw.
+        return (inner.x - outer.x) - (top.x - base.x), (inner.y - outer.y) - (top.y - base.y)
 
     def primary_action(self, client, ident, button):
         obj = self.resolve(client, ident)
