@@ -613,6 +613,17 @@ class Accessibility:
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
 
+    def toolkit(self, client):
+        """The window's toolkit name (case-folded) and version from AT-SPI, or empty strings."""
+        try:
+            root = self.root(client)
+            app = root.get_application() if root is not None else None
+            if app is not None:
+                return (app.get_toolkit_name() or "").casefold(), app.get_toolkit_version() or ""
+        except Exception:
+            pass
+        return "", ""
+
     def wheel_step(self, client, x, y, horizontal=False):
         """Pixels a GTK 3 scrolled window at a window point moves per wheel step, or None.
 
@@ -621,15 +632,10 @@ class Accessibility:
         units would move about six times as far in a typical window. Other
         toolkits take axis units as pixels."""
         try:
-            root = self.root(client)
-            if root is None:
+            name, version = self.toolkit(client)
+            if name not in ("gtk", "gtk+", "gail") or not version.startswith("3."):
                 return None
-            app = root.get_application()
-            # GTK 3 still names itself "GTK+" (or "gail"); GTK 4 says "GTK".
-            if app is None or (app.get_toolkit_name() or "").casefold() not in ("gtk+", "gtk", "gail") \
-                    or not (app.get_toolkit_version() or "").startswith("3."):
-                return None
-            path = [root]
+            path = [self.root(client)]
             for _ in range(64):
                 child = path[-1].get_accessible_at_point(round(x), round(y), self.api.CoordType.WINDOW)
                 if child is None or self.identity(child) == self.identity(path[-1]):

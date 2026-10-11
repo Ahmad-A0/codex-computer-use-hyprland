@@ -1,8 +1,8 @@
 <!doctype html><meta charset="utf-8"><title>Codex E2E Keys</title>
 <!-- Disposable page for input-fidelity tests. Its state is mirrored into the
      window title as JSON, which tests read from Hyprland: the text area's
-     length, FNV-1a hash and tail, its selection, the page selection and the
-     scroller's offsets. -->
+     length, FNV-1a hash and tail, its selection, the page selection, the
+     scroller's and the document's scroll offsets, and the last keys it saw. -->
 <style>
 body{font:16px/20px monospace;margin:8px}
 textarea{width:90%;height:150px;font:inherit}
@@ -13,6 +13,7 @@ textarea{width:90%;height:150px;font:inherit}
 <textarea id="area" aria-label="Keys area"></textarea><br>
 <p id="words" aria-label="Keys words">ab cd middleword ef gh</p>
 <div id="scroller" aria-label="Keys scroller" tabindex="0"></div>
+<div style="height:4000px" aria-hidden="true"></div>
 <script>
 for (let i = 0; i < 300; i++) {
   const line = document.createElement('div');
@@ -20,15 +21,22 @@ for (let i = 0; i < 300; i++) {
   scroller.appendChild(line);
 }
 const fnv = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
+const keys = [];
 const sync = () => {
   const v = area.value;
   document.title = 'Codex E2E Keys|' + JSON.stringify({ n: v.length, h: fnv(v), t: v.slice(-40),
     a: [area.selectionStart, area.selectionEnd], s: String(getSelection()), y: scroller.scrollTop, x: scroller.scrollLeft,
-    ph: scroller.clientHeight });
+    ph: scroller.clientHeight, wy: scrollY, ih: innerHeight, k: keys });
 };
+document.addEventListener('keydown', (e) => {
+  keys.push(`${e.ctrlKey ? 'C-' : ''}${e.altKey ? 'A-' : ''}${e.metaKey ? 'M-' : ''}${e.key}`);
+  keys.splice(0, keys.length - 8);
+  sync();
+}, true);
 area.addEventListener('input', sync);
 area.addEventListener('select', sync);
 document.addEventListener('selectionchange', sync);
 scroller.addEventListener('scroll', sync);
+addEventListener('scroll', sync);
 sync();
 </script>

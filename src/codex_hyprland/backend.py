@@ -615,12 +615,15 @@ class Backend:
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
             amount = pixels
-            # GTK 3 multiplies wheel input by its own page-dependent step; send
-            # what moves the requested pixels there (one wheel click per step
-            # on XWayland, ten axis units per step on Wayland).
+            # Toolkits read Wayland axis values as wheel units (ten per wheel
+            # click), not pixels. GTK 3 scrolls a page-dependent step per ten
+            # units, Chromium 120 pixels; send what moves the requested pixels
+            # (on XWayland, GTK 3 gets one wheel click per step).
             step = self.ax.wheel_step(c, x, y, dx != 0)
             if step:
                 amount = 40 * max(1, round(pixels / step)) if c.get("xwayland") else pixels * 10 / step
+            elif not c.get("xwayland") and self.ax.toolkit(c)[0] == "chromium":
+                amount = pixels / 12
             with self.holding(c, names):
                 background.send(c, "scroll", x=x, y=y, dx=dx * amount, dy=dy * amount)
 
@@ -808,6 +811,7 @@ class Backend:
                     background.send(source, "button", x=sx, y=sy, button="left", state="down")
                 else:
                     background.send(source, "drag_begin", x=sx, y=sy, timeout=600000, focus=True)
+                    self.service(source)
                 self.dragging = {"source": source, "target": source, "x": source["at"][0] + sx, "y": source["at"][1] + sy}
             return
         if not self.dragging:
@@ -832,7 +836,19 @@ class Backend:
                         self.dragging = None
                         raise RuntimeError("The drag was already released by physical input or its timeout") from None
                     raise
+                self.service(source, target)
             self.dragging.update(x=x, y=y, target=target)
+
+    def service(self, *clients):
+        """Let windows on hidden workspaces handle the input just sent. A
+        toolkit that redrew (a caret, a focus ring) waits for the compositor's
+        frame callback before reading further input, and Hyprland sends none
+        to a window it is not showing. A held drag_handle has no observation
+        between its steps to do this, unlike a one-call drag."""
+        for client in {c["address"]: c for c in clients}.values():
+            if not client.get("xwayland") and not self.visible(client):
+                with background.refreshing(client):
+                    pass
 
     def select_text(self, p):
         c = self.target(p.get("window"))

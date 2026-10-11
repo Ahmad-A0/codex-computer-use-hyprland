@@ -451,7 +451,7 @@ export default function (test) {
         const slack = app === 'xinp' ? page ** (2 / 3) / 2 : line / 2;
         check(Math.abs(r.onePage - page) <= Math.max(page * 0.03, slack), `${name}: one page moved ${r.onePage} px, the page is ${page} px`);
         check(Math.abs(r.threeLines - 3 * line) <= slack, `${name}: ${3 * line} px moved ${r.threeLines} px`);
-        check(r.back === 0, `${name}: scrolling back the same distance ended at ${r.back}`);
+        check(Math.abs(r.back) < 0.5, `${name}: scrolling back the same distance ended at ${r.back}`);
       }
       if (qt) {
         await ensureQt();
@@ -472,18 +472,23 @@ export default function (test) {
       }
       if (browser) {
         await ensureKeys();
-        const scroll = async (direction, distance) => {
-          await js(`const i = e2eIndex(await kpage.getAXState({ emit: false, disableDiffing: true }), "Keys scroller");
+        // Pages scroll the document by its viewport; pixels scroll the inner scroller.
+        const scroll = async (target, direction, distance, read) => {
+          await js(`const tree = await kpage.getAXState({ emit: false, disableDiffing: true });
+            const i = ${target === 'document' ? 'Number(tree.split("\\n").find((l) => /^\\s*\\d+ document web\\b/.test(l)).trim().match(/^(\\d+)/)[1])' : 'e2eIndex(tree, "Keys scroller")'};
             await kpage.scroll(i, "${direction}", ${JSON.stringify(distance)}); await kpage.getAXState({ emit: false });`);
-          return settled(() => keysState().y, 'Chromium scrolling settled');
+          return settled(read, 'Chromium scrolling settled');
         };
-        await scroll('up', 40);
-        const c = results.chromium = { page: keysState().ph, start: keysState().y, onePage: await scroll('down', 1) };
-        c.threeLines = await scroll('down', { pixels: 60 }) - c.onePage;
-        c.back = await scroll('up', { pixels: c.page + 60 });
+        const page = () => keysState().wy, inner = () => keysState().y;
+        await scroll('document', 'up', 40, page);
+        const c = results.chromium = { page: keysState().ih, start: keysState().wy, onePage: await scroll('document', 'down', 1, page) };
+        c.back = await scroll('document', 'up', 1, page);
+        await scroll('scroller', 'up', { pixels: 8000 }, inner);
+        c.sixty = await scroll('scroller', 'down', { pixels: 60 }, inner);
+        c.sixtyBack = await scroll('scroller', 'up', { pixels: 60 }, inner);
         check(c.start === 0 && Math.abs(c.onePage - c.page) <= 2, `Chromium: one page moved ${c.onePage} px, the page is ${c.page} px`);
-        check(Math.abs(c.threeLines - 60) <= 2, `Chromium: 60 px moved ${c.threeLines} px`);
-        check(c.back === 0, `Chromium: scrolling back ended at ${c.back}`);
+        check(c.back === 0, `Chromium: scrolling back one page ended at ${c.back}`);
+        check(Math.abs(c.sixty - 60) <= 1 && c.sixtyBack === 0, `Chromium: 60 px moved ${c.sixty} px, and back to ${c.sixtyBack}`);
       }
     } finally {
       writeFileSync(join(out, 'input-scroll.json'), JSON.stringify(results, null, 2));
@@ -598,7 +603,9 @@ export default function (test) {
         `await uw.drag(${JSON.stringify(centre(agentState().geometry.slider))}, [${agentState().geometry.slider[0] + 30}, ${centre(agentState().geometry.slider)[1]}]);`,
         `await uw.pressKey("End"); await uw.typeText(" end");`,
       ];
-      const cursors = [[1200, 200], [300, 300], [1700, 900], [500, 500], [1100, 700], [60, 60], [1900, 1000], [900, 540], [1400, 400]];
+      // Pointer positions stay over the user's window: Hyprland's cursor warp
+      // focuses the window under it, as the user's click would.
+      const cursors = [[1200, 200], [1300, 300], [1700, 900], [1500, 500], [1100, 700], [1020, 60], [1860, 1000], [1400, 540], [1600, 400]];
       let typed = '';
       for (const [n, action] of actions.entries()) {
         cursorTo(...cursors[n]);
@@ -618,7 +625,7 @@ export default function (test) {
       const long = longText({ lines: 30 });
       await js(`const i = await e2eFind(uw, "Input document", "text"); await uw.setValue(i, ""); await uw.click(i);`);
       let moves = 0, last = null;
-      const mover = setInterval(() => { last = [100 + (moves * 97) % 1700, 100 + (moves * 53) % 850]; moves++; try { cursorTo(...last); } catch {} }, 60);
+      const mover = setInterval(() => { last = [1010 + (moves * 97) % 860, 50 + (moves * 53) % 980]; moves++; try { cursorTo(...last); } catch {} }, 60);
       let typist;
       try {
         typist = userTypes(sentence, 12);

@@ -321,7 +321,11 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
             // right-click there sends its context menu to the window, not to
             // the widget under the pointer, and no menu opens.
             if(op=="click"){p->sendMotion(t,local+Vector2D{local.x>=1?-1.0:1.0,0.0});p->sendFrame();}
-            p->sendMotion(t,local); p->sendFrame();
+            // A scroll shares the frame of the pointer's arrival. Qt defers the
+            // later frames of a burst to an idle timer, by which time the leave
+            // below has taken its pointer focus and the wheel event is dropped;
+            // the first frame of a burst is handled at once.
+            p->sendMotion(t,local); if(op!="scroll")p->sendFrame();
             if(op=="click") for(int i=0;i<count;++i) { p->sendButton(t+i*30,button,WL_POINTER_BUTTON_STATE_PRESSED); p->sendFrame(); p->sendButton(t+i*30+1,button,WL_POINTER_BUTTON_STATE_RELEASED); p->sendFrame(); }
             if(op=="drag") {
                 p->sendButton(t,button,WL_POINTER_BUTTON_STATE_PRESSED); p->sendFrame();
