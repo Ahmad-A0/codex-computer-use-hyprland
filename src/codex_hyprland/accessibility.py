@@ -1181,6 +1181,26 @@ class Accessibility:
             raise RuntimeError('Application refused Unicode text insertion')
         obj.set_caret_offset(start + len(value))
 
+    def focused_text(self, client):
+        """The window's one focused text control, or None."""
+        try:
+            self.snapshot(client)
+            focused = [obj for obj, _, _ in self.elements.get(client['address'], {}).values()
+                       if obj.is_text() and obj.get_state_set().contains(self.api.StateType.FOCUSED)]
+        except Exception:
+            return None
+        return focused[0] if len(focused) == 1 else None
+
+    def ends_with(self, obj, tail):
+        """Whether the text before obj's caret ends with tail (the app has
+        handled the keys that typed it)."""
+        try:
+            obj.clear_cache()
+            caret = obj.get_caret_offset()
+            return caret >= len(tail) and self.api.Text.get_text(obj, caret - len(tail), caret) == tail
+        except Exception:
+            return False
+
     def focused_terminal(self, client):
         """Identify terminal controls without changing the focused element."""
         self.snapshot(client)

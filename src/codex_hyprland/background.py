@@ -98,24 +98,32 @@ def settle(client):
             break
 
 
-def caught_up(client, limit=10):
+def caught_up(client, done=None, limit=10):
     """Let a window handle the input already sent to it.
 
     A window on a hidden workspace gets no frame callbacks, and a toolkit
     that redrew waits for one before handling further input, so typed text
     can queue up there for seconds. Service the window's frame callbacks until
-    it stops asking for frames (about a fifth of a second), within limit."""
+    done() holds or, without it, until the window stops asking for frames
+    (about a fifth of a second), within limit seconds."""
     deadline = time.monotonic() + limit
     lease = send(client, 'refresh_begin')['token']
-    leased = time.monotonic()
+    leased = checked = time.monotonic()
     try:
         quiet = 0
-        while quiet < 12 and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if done is not None and time.monotonic() - checked >= .1:
+                if done():
+                    return True
+                checked = time.monotonic()
+            if done is None and quiet >= 12:
+                return True
             if time.monotonic() - leased >= 4:  # leases lapse after five seconds
                 send(client, 'refresh_end', token=lease)
                 lease, leased = send(client, 'refresh_begin')['token'], time.monotonic()
             quiet = quiet + 1 if not send(client, 'refresh')['callbacks'] else 0
             time.sleep(.016)
+        return False
     finally:
         send(client, 'refresh_end', token=lease)
 
