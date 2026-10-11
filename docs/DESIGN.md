@@ -147,14 +147,14 @@ await app.getAXStateAndScreenshot();
 | App/window inventory | Gio desktop entries and Hyprland clients |
 | `getApp(string)` | Resolve name, inventory ID, or desktop-file path; launch in background when needed |
 | `getApp({windowId})` | Bind the exact mapped window with identity checks |
-| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set. Open context menus and popup menus of the window are part of its tree (see below) |
+| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set. Open context menus and popup menus of the window are part of its tree (see below); a closed menu's items are not, nor are the off-screen children of a container that manages its descendants (a spreadsheet's cells) |
 | App approval | As on macOS, the first action on an app asks "Allow Computer Use to use X?" through a Codex elicitation; Codex remembers session/always answers |
 | Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture, also for windows on hidden workspaces; coordinates follow the latest app screenshot |
-| Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS. Items of an open popup menu are clicked at their centre, so the menu closes as a user's click closes it |
+| Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS. Items of an open popup menu, and the menus of a visible menu bar, are clicked at their centre, as a user's click opens or closes them (GTK 3's action on a menu bar item opens the bar's first menu) |
 | Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland |
 | `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control. macOS key names work: `cmd`/`command` is Ctrl and `option` is Alt; `super` stays Super |
 | `selectText` | Text match, prefix/suffix disambiguation, selection or before/after caret placement; verified result |
-| `setValue` | Editable text replacement or finite, range-checked numeric value; verified result |
+| `setValue` | Editable text replacement or finite, range-checked numeric value (a spin button's by value, which GTK 3 otherwise leaves uncommitted); verified result, allowing for apps that apply it late. A field whose app ignores the replacement (Firefox web pages) is focused, its text selected and the value typed |
 | `paste` | Text/HTML/Markdown on Wayland and XWayland; Markdown rendered to HTML |
 | Page-count scroll | Nearest accessible viewport extent; window extent for coordinate targets; pixel form also supported |
 | `drag` | Timed pointer motion and native data transfer between Wayland windows/apps and between XWayland windows |

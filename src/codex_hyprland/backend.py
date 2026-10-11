@@ -15,7 +15,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from .accessibility import Accessibility, LAUNCH_ENVIRONMENT, TextNotRetained
+from .accessibility import Accessibility, LAUNCH_ENVIRONMENT, NoBounds, TextNotRetained
 from . import background, session, desktop, guards
 
 
@@ -414,8 +414,7 @@ class Backend:
         if "element_id" in p:
             if not c or "x" in p or "y" in p:
                 raise ValueError("An element requires one window and no coordinates")
-            self.rendered(c)
-            return self.ax.point(c, text(p["element_id"], "element_id", False))
+            return self.element_point(c, text(p["element_id"], "element_id", False))
         if c and "x" not in p and "y" not in p:
             return c["size"][0] / 2, c["size"][1] / 2
         origin = self.capture_origins.get(c["address"], (0, 0)) if c else (0, 0)
@@ -464,6 +463,20 @@ class Backend:
             with background.refreshing(c):
                 pass
 
+    def element_point(self, c, ident):
+        """An element's centre once the window has rendered. Firefox reports no
+        extents for page content changed since its last paint, and a window on
+        a hidden workspace paints only when let to: allow it a moment."""
+        deadline = time.monotonic() + 1.5
+        while True:
+            self.rendered(c)
+            try:
+                return self.ax.point(c, ident)
+            except NoBounds:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(.1)
+
     def get_window_state(self, p):
         c = self.target(p.get("window"))
         include = p.get("include_screenshot", True)
@@ -510,8 +523,7 @@ class Backend:
                 return
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
-            self.rendered(c)
-            x, y = self.ax.point(c, ident)
+            x, y = self.element_point(c, ident)
         else:
             x, y = self.location(p, c)
         self.point(c, x, y)
@@ -801,7 +813,6 @@ class Backend:
                     obj = ignored.obj
                 # Firefox ignores AT-SPI text replacement in web pages: replace
                 # the focused field's text as a user does, select all and type.
-                self.trust.guard_password_field(c, False)
                 background.send(c, "key", key="a", modifiers=["Control"])
                 if not value:
                     background.send(c, "key", key="BackSpace", modifiers=[])

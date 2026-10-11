@@ -36,6 +36,10 @@ MENU_ROLES = ("popup menu", "menu")
 SHOWN_CHILDREN_ROLES = ("popup menu", "menu", "combo box")
 
 
+class NoBounds(ValueError):
+    """An element without usable extents (yet: Firefox reports none until it repaints)."""
+
+
 class TextNotRetained(RuntimeError):
     """A text replacement the application ignored; obj is the field, focused if it took focus."""
 
@@ -418,7 +422,7 @@ class Accessibility:
             if states.contains(self.api.StateType.DEFUNCT):
                 return None
             if shown_only and not states.contains(self.api.StateType.SHOWING):
-                return None  # An item of a closed menu; not counted against the budget.
+                return None  # A closed menu's item or an off-screen cell; not counted against the budget.
             seen.add(ident)
             role = obj.get_role_name()
             node = {"id": ident, "role": role, "name": self.name(obj, role),
@@ -534,7 +538,7 @@ class Accessibility:
         obj = self.resolve(client, ident)
         rect = obj.get_extents(self.api.CoordType.WINDOW)
         if rect.width <= 0 or rect.height <= 0:
-            raise ValueError("Element has no usable bounds")
+            raise NoBounds("Element has no usable bounds")
         offsets = self.offsets.get(client["address"], {})
         if ident in offsets:
             # Popup elements report extents relative to their popup surface.
@@ -656,9 +660,9 @@ class Accessibility:
                 return
             if self.retained(obj, value):
                 return
-            # Firefox applies the change in its content process, so it shows up
-            # late, and only to a field whose editor exists, which it creates
-            # when the field is first focused: focus the field and set it again.
+            # Some apps apply it late (retained() waits); Firefox web pages
+            # ignore it. Focus the field and try once more; if that fails too,
+            # the backend types the value into the focused field.
             focused = lambda: (obj.clear_cache(), obj.get_state_set().contains(self.api.StateType.FOCUSED))[1]
             if not focused() and obj.is_component() and obj.grab_focus():
                 deadline = time.monotonic() + .6
