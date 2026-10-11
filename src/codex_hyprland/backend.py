@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import itertools
 import fcntl
 import io
 import math
@@ -690,6 +691,18 @@ class Backend:
             self.trust.guard_password_field(c, False)
             if c.get("xwayland") and any(ord(char) > 127 for char in value):
                 self.ax.insert_focused_text(c, value)
+            elif any(ord(char) > 0xFFFF for char in value) and self.ax.toolkit(c)[0] == "chromium":
+                # A Chromium key event carries one UTF-16 unit, so characters
+                # beyond it (emoji) typed as keys are dropped. macOS types any
+                # Unicode string; paste those through a private offer (the
+                # desktop clipboard is untouched) between the typed runs.
+                from .clipboard import paste
+                for beyond, chars in itertools.groupby(value, lambda char: ord(char) > 0xFFFF):
+                    part = "".join(chars)
+                    if beyond:
+                        paste(c, part, "text")
+                    else:
+                        background.type_text(c, part)
             else:
                 background.type_text(c, value)
 
@@ -775,8 +788,9 @@ class Backend:
                     background.send(source, "button", x=x, y=y, button="left", state="up")
                     return
                 try:
-                    status = background.send(source, "drag_status")
                     target = drag["target"]
+                    self.service(source, target)
+                    status = background.send(source, "drag_status")
                     deadline = time.monotonic() + .75
                     while status["dnd"] and not status["accepted"] and time.monotonic() < deadline:
                         background.send(target, "drag_move", x=drag["x"] - target["at"][0], y=drag["y"] - target["at"][1])
@@ -813,6 +827,7 @@ class Backend:
                     background.send(source, "button", x=sx, y=sy, button="left", state="down")
                 else:
                     background.send(source, "drag_begin", x=sx, y=sy, timeout=600000, focus=True)
+                    self.service(source)
                 self.dragging = {"source": source, "target": source, "x": source["at"][0] + sx, "y": source["at"][1] + sy}
             return
         if not self.dragging:
@@ -837,7 +852,20 @@ class Backend:
                         self.dragging = None
                         raise RuntimeError("The drag was already released by physical input or its timeout") from None
                     raise
+                self.service(source, target)
             self.dragging.update(x=x, y=y, target=target)
+
+    def service(self, *clients):
+        """Let hidden windows handle a held drag's step before the next one.
+
+        A window on a hidden workspace gets no frame callbacks, and GTK then
+        holds its input: the motions of separate drag_handle steps merge into
+        the last, and a drag-and-drop the app would start on the way never
+        starts. As an observation does, service the frame callbacks."""
+        for client in {c["address"]: c for c in clients}.values():
+            if not client.get("xwayland") and not self.visible(client):
+                with background.refreshing(client):
+                    pass
 
     def select_text(self, p):
         c = self.target(p.get("window"))
