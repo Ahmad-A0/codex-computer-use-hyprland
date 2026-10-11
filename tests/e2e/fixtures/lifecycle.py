@@ -151,6 +151,8 @@ def chooser(action, title, folder):
         dialog.destroy()
         event(key + '-closed', response == Gtk.ResponseType.ACCEPT)
 
+    # Where keyboard focus moves inside the dialog (a popover closes when it leaves it).
+    dialog.connect('set-focus', lambda _, widget: event('set-focus', title, type(widget).__name__ if widget else None))
     dialog.connect('selection-changed', selected)
     dialog.connect('response', respond)
     dialog.show_all()

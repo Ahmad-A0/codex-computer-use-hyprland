@@ -147,7 +147,7 @@ await app.getAXStateAndScreenshot();
 | App/window inventory | Gio desktop entries and Hyprland clients |
 | `getApp(string)` | Resolve name, inventory ID, or desktop-file path; launch in background when needed |
 | `getApp({windowId})` | Bind the exact mapped window with identity checks |
-| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set. Open context menus and popup menus of the window are part of its tree (see below) |
+| Accessibility observations | Window-scoped AT-SPI; explicit compositor-only fallback when unavailable. As on macOS, `getAXState()` returns a diff from the window's previous observation (`~` changed, `+` added, removed ID ranges, or a no-change notice) unless `disableDiffing` is set. Open context menus and popup menus of the window are part of its tree (see below); hidden controls (a closed GTK 3 popover, a hidden widget) are not |
 | App approval | As on macOS, the first action on an app asks "Allow Computer Use to use X?" through a Codex elicitation; Codex remembers session/always answers |
 | Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture, also for windows on hidden workspaces; coordinates follow the latest app screenshot |
 | Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS. Items of an open popup menu are clicked at their centre, so the menu closes as a user's click closes it |
@@ -308,7 +308,9 @@ and identical-window binding paths are implemented. Platform-specific limits rem
   rejected before sending pointer input. Indexed accessibility actions still
   work for covered controls when the toolkit exposes them.
   XWayland wheel scrolling uses legacy wheel steps rather than exact pixel axes.
-  Unicode typing requires an accessible focused editable control.
+  Unicode typing requires an accessible focused editable control. X11 clients that
+  read the core pointer (GTK 3 places tooltips by it) see the user's cursor, not
+  the private XInput2 pointer, which never moves the core one.
 - Toolkit support still matters: inaccessible controls and applications that
   reject text/value changes or do not acknowledge focus notifications return
   explicit errors. No tree is guessed when identity cannot be verified.
@@ -323,6 +325,9 @@ client-side focus probe when needed. The probe clears the client's accessibility
 active state, enters the requested surface, observes the responding frame, and
 restores routing. It never activates the window in Hyprland or changes its title,
 size, position, or contents. Existing verified bindings survive title changes.
+The app does see its focused window lose keyboard focus during the probe, so a
+window that closes on focus loss (a quick switcher) closes; observations treat
+windows and elements that vanish meanwhile as gone, not as errors.
 
 Automation-created Wayland popup grabs stay private. Their keyboard events go to
 the owned popup, and the compositor's synthetic motion refresh cannot refocus the
