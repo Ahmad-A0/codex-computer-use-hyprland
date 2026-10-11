@@ -559,7 +559,8 @@ class Backend:
             # input would move a list about four pages. Send what moves the
             # content by the requested distance, as on other toolkits.
             ident = text(p["element_id"], "element_id", False)
-            if self.ax.toolkit(c, ident)[0:2] == ("GTK", "3"):
+            name, major = self.ax.toolkit(c, ident)
+            if name.casefold().startswith("gtk") and major == "3":
                 page = self.ax.viewport(c, ident, directions[p["direction"]][0] != 0)
                 unit = min(page ** (2 / 3), page / 2)
                 if unit > 0:
@@ -809,7 +810,7 @@ class Backend:
             with self.app_action(c):
                 if c.get("xwayland"):
                     background.send(c, "hold")
-                self.ax.focus_editable(c, ident)
+                self.ax.focus_editable(c, ident, restore=False)
                 self.ax.select_all(c, ident)
             if not value:
                 background.send(c, "key", key="BackSpace", modifiers=[])

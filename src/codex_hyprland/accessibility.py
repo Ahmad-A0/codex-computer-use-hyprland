@@ -870,7 +870,7 @@ class Accessibility:
             raise ValueError('Editable element has no visible bounds')
         return obj
 
-    def focus_editable(self, client, ident):
+    def focus_editable(self, client, ident, restore=True):
         """Focus an editable element, keeping its caret and selection.
 
         Toolkits such as GTK select all text on focus; typing must not replace it.
@@ -889,7 +889,7 @@ class Accessibility:
             if time.monotonic() > deadline:
                 raise RuntimeError('Application did not focus the editable element; no text typed')
             time.sleep(.02)
-        if not text:
+        if not text or not restore:
             return
         if selection is not None:
             ok = obj.set_selection(0, selection.start_offset, selection.end_offset) if obj.get_n_selections() else obj.add_selection(selection.start_offset, selection.end_offset)
