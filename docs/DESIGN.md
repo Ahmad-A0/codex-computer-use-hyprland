@@ -151,12 +151,12 @@ await app.getAXStateAndScreenshot();
 | App approval | As on macOS, the first action on an app asks "Allow Computer Use to use X?" through a Codex elicitation; Codex remembers session/always answers |
 | Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture, also for windows on hidden workspaces; coordinates follow the latest app screenshot |
 | Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS. A coordinate click goes to the centre of the element's part inside the window and its scrolling ancestors; an element not wholly shown is first scrolled into view like macOS `AXScrollToVisible` (AT-SPI `ScrollTo`, or a GTK 4 list item's scroll-to action), and one still not on screen (a list row scrolled away, which would otherwise be clicked through to the control drawn there) is refused. An element without extents yet (Firefox page content changed since its last paint) gets a moment while the window renders. Items of an open popup menu, and the menus of a visible menu bar, are clicked at their centre, as a user's click opens or closes them (GTK 3's action on a menu bar item opens the bar's first menu) |
-| Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland |
+| Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland. As on macOS, separate clicks stay single: toolkits count clicks from the time and distance between presses, so a press near the previous one waits out the desktop's double-click time |
 | `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control. macOS key names work: `cmd`/`command` is Ctrl and `option` is Alt; `super` stays Super |
 | `selectText` | Text match, prefix/suffix disambiguation, selection or before/after caret placement; verified result |
 | `setValue` | Editable text replacement or finite, range-checked numeric value, under the app's keyboard focus; verified result, allowing for apps that apply it late (rendering a hidden Chromium window meanwhile; Firefox applies values in its content process). A number sets a spin button's value, not its text, which GTK would apply only on activation. A field whose app ignores the replacement (Firefox web pages) is focused, its text selected and the value typed; so is rich text without a replaceable value (a web contenteditable) |
 | `paste` | Text/HTML/Markdown on Wayland and XWayland; Markdown rendered to HTML |
-| Page-count scroll | Nearest accessible viewport extent (or the item view that scrolls itself); window extent for coordinate targets; pixel form also supported. Toolkits scale Wayland scroll input differently, so the input is chosen per toolkit to move the content by the requested distance: touchpad pixels scaled for GTK 3 (min(page^(2/3), page/2) per ten pixels) and GTK 4 (2.5×), wheel value120 for Chromium (whose touchpad input flings) and whole rows for Qt item views (three rows per notch). Touchpad scrolls end with an axis stop at the scroll's own timestamp, so no kinetic fling follows, and the pointer leaves the window only in a later event batch, as Qt drops wheel events whose pointer has already left |
+| Page-count scroll | Nearest accessible viewport extent (or the item view that scrolls itself); window extent for coordinate targets; pixel form also supported. The input is chosen per toolkit so that the content moves by the requested distance (see below) |
 | `drag` | Timed pointer motion and native data transfer between Wayland windows/apps and between XWayland windows |
 
 The full Sky Linux client surface is also served: `key_down`/`key_up`, the `key`
@@ -182,6 +182,16 @@ through AT-SPI, and restores its caret and selection (GTK selects all on focus).
 moves the pressed button with `move_to`, and releases at `end`; app-started
 drag-and-drop goes to the window under the point. Pointer actions are refused
 while a handle is pressed; physical button input or 10 idle minutes cancel it.
+A window on a hidden workspace gets no frame callbacks, and GTK then holds its
+input, so the motions of separate steps would merge and a drag-and-drop the app
+starts on the way never would: each step services the hidden source's and
+target's frame callbacks, as an observation does.
+
+A global coordinate (no window) targets the topmost window on a shown
+workspace. The end of a drag that leaves its window, and a drag handle's moves,
+target windows on the source window's workspace only: windows of other
+workspaces share the coordinates, and a user's window there never receives the
+agent's drop.
 
 `clipboard_read` sends the app's Copy shortcut (terminal-aware, like paste). On
 Wayland the module keeps that client's new selection private, reads every
@@ -200,7 +210,16 @@ functions. Same-client keyboard routing persists across automation calls so
 Chromium retains selections, then returns to the physical foreground surface
 before physical input. Explicit `activate_window` remains explicit activation.
 
-Private Wayland clipboard offers preserve the desktop selection. XWayland paste
+Private Wayland clipboard offers preserve the desktop selection. After a paste
+only the client with the keyboard focus gets the desktop selection back; another
+client keeps the private offer (the compositor sends it the desktop selection
+when it gains focus). An app may read a new selection as soon as it is offered
+(Chromium does) and handle the paste shortcut much later, after input still
+queued before it, such as a long typed text. The transaction therefore ends only
+after a read that follows the shortcut, with the window's frame callbacks
+serviced meanwhile if it is hidden (an app that read the offer at once and reads
+no more gets five seconds); a paste must never find the user's clipboard or no
+selection at all. XWayland paste
 snapshots every available clipboard data format, temporarily owns the X selection,
 and restores the previous formats unless a newer copy replaced the selection. A
 small owner process retains the restored data until the next copy or X server exit.
@@ -275,6 +294,42 @@ client that does not answer gets the seat's map after five seconds. The user's
 own keys always use the seat's map: a physical key for that client restores it
 first. The seat and the physical keyboard are never changed.
 
+Key names are X keysym names, case-sensitive as for xdotool and the X11 helper
+(`Z` is the shifted letter); a character key missing from both the seat's
+layout and US is bound like typed text. Extra characters go on keys that
+Chromium treats as inert (F13 to F24, the 102nd, Ro and Yen keys, and the extra
+keypad comma, equal and parentheses): Chromium also maps a key code to a
+physical key and acts on some (evdev `KEY_CLOSE` closes its window), and drops
+codes it does not know, so a batch carries at most 16 distinct characters
+beyond ASCII. A Chromium key event carries one UTF-16 unit, so characters beyond
+the Basic Multilingual Plane (emoji) are pasted into Chromium between the typed
+runs, as macOS types any Unicode string.
+
+Wayland leaves the scale of scroll input to each toolkit, and most read axis
+values as wheel units (ten per wheel click), not as pixels. The scroll is chosen
+per toolkit, from the application's AT-SPI toolkit and the element (or the
+element under the point), to move the content by the requested pixels:
+
+- GTK 3 scrolls `min(page^(2/3), page/2)` of the scrolled view per ten touchpad
+  units, so it gets the units that move the requested pixels of the nearest
+  viewport; on XWayland, where the helper sends wheel clicks (one per 40 units)
+  and GTK scrolls one such step per click, the clicks that come closest.
+- GTK 4 moves 2.5 pixels per touchpad unit (`MAGIC_SCROLL_FACTOR`).
+- Chromium moves twelve pixels per touchpad unit and starts a fling when a later
+  frame stops the scroll, so it gets a twelfth of the pixels with the axis stop
+  first in the same frame: the page moves exactly that far at once (a wheel
+  would animate, which a window on a hidden workspace does not render).
+- Qt scrolls three rows (item views) or lines (plain text) per wheel notch,
+  at most a page per event, so it gets wheel `value120` for the whole rows or
+  lines that fit in the requested pixels.
+
+Touchpad scrolls otherwise end with an axis stop, in its own frame and at the
+scroll's own timestamp: toolkits derive a kinetic fling from the motion's
+duration. The pointer leaves the window only in a later event batch (before any
+further synthetic pointer input, or after 100 ms): Qt 6 dispatches wheel events
+after reading the whole batch, from an idle timer, and drops them when the
+pointer has already left.
+
 X11 keys do not depend on the seat's current keymap. XWayland's core keymap is
 that of the last Wayland keyboard used; after a virtual keyboard such as `wtype`
 it holds only that tool's keys. A key or character the core map lacks is bound,
@@ -307,7 +362,8 @@ and identical-window binding paths are implemented. Platform-specific limits rem
   X11 pointer targets and drag endpoints obscured by another X11 window are
   rejected before sending pointer input. Indexed accessibility actions still
   work for covered controls when the toolkit exposes them.
-  XWayland wheel scrolling uses legacy wheel steps rather than exact pixel axes.
+  XWayland wheel scrolling uses legacy wheel steps rather than exact pixel axes
+  (GTK 3 gets as many as come closest to the requested pixels).
   Unicode typing requires an accessible focused editable control. X11 clients that
   read the core pointer (GTK 3 places tooltips by it) see the user's cursor, not
   the private XInput2 pointer, which never moves the core one.

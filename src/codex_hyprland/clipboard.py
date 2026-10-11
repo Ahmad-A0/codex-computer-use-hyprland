@@ -67,25 +67,59 @@ def paste_items(client, items, trigger):
 
 
 def offer(client, fields, trigger):
+    """Offer data privately to the client and run its paste.
+
+    Apps may read a new selection as soon as it is offered (Chromium's
+    clipboard observers do), and handle the paste shortcut much later, after
+    the input still queued before it (a long typed text). The paste is the
+    read that follows the shortcut: the offer stays private and current until
+    then, and a window on a hidden workspace gets frame callbacks meanwhile,
+    since a toolkit that redrew waits for one before reading further input.
+    Ending the transaction at the early read let the paste find another
+    selection (Chromium then pasted nothing, or the user's clipboard)."""
     token = background.send(client, 'paste_begin', **fields)['token']
+    lease = None
     try:
-        trigger()
-        deadline = time.monotonic() + 4
-        last = None
-        quiet = time.monotonic()
-        while time.monotonic() < deadline:
-            status = background.send(client, 'paste_status', token=token)
-            signature = (status['received'], status['completed'], status['failed'])
-            if signature != last:
-                last, quiet = signature, time.monotonic()
-            if status['failed']:
+        def status():
+            reply = background.send(client, 'paste_status', token=token)
+            if reply['failed']:
                 raise RuntimeError('Application closed its clipboard transfer before completion')
-            if status['completed'] and status['received'] == status['completed'] and time.monotonic() - quiet >= .2:
-                return
+            return reply['received'], reply['completed']
+        # Reads of the offer itself, before the shortcut.
+        early, since, deadline = status(), time.monotonic(), time.monotonic() + 1
+        while time.monotonic() < deadline and time.monotonic() - since < .15:
             time.sleep(.025)
-        raise RuntimeError('Application did not consume the private clipboard offer')
+            if (now := status()) != early:
+                early, since = now, time.monotonic()
+        trigger()
+        start = quiet = leased = time.monotonic()
+        lease = background.send(client, 'refresh_begin')['token']
+        last = None
+        while True:
+            received, completed = signature = status()
+            now = time.monotonic()
+            if signature != last:
+                last, quiet = signature, now
+            done = completed == received and now - quiet >= .2
+            if done and received > early[0]:
+                return
+            # An app that pastes what it read when offered reads no more.
+            if done and early[1] and now - start >= 5:
+                return
+            if now - start >= 10:
+                raise RuntimeError('Application did not consume the private clipboard offer')
+            if now - leased >= 4:  # leases lapse after five seconds
+                background.send(client, 'refresh_end', token=lease)
+                lease, leased = None, now
+                lease = background.send(client, 'refresh_begin')['token']
+            background.send(client, 'refresh')
+            time.sleep(.025)
     finally:
-        background.send(client, 'paste_end', token=token)
+        try:
+            if lease is not None:
+                background.send(client, 'refresh_end', token=lease)
+        finally:
+            background.send(client, 'paste_end', token=token)
 
 
 # ICCCM selection requests that are not data formats. GTK 3 also lists them as

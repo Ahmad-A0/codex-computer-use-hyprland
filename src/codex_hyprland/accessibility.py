@@ -1004,10 +1004,12 @@ class Accessibility:
         """The native scroll that moves the content under the target by
         ``pixels``: (axis value, extra native fields). Wayland leaves the scale
         of scroll input to each toolkit: GTK 3 moves min(page^(2/3), page/2)
-        of the scrolled view per ten touchpad pixels, GTK 4 2.5 pixels per
-        pixel (MAGIC_SCROLL_FACTOR). Chromium flings touchpad input, but moves a
-        wheel's value120 in pixels; Qt scrolls item views by three rows per
-        wheel notch (its default wheelScrollLines). Others get touchpad pixels."""
+        of the scrolled view per ten touchpad pixels (per wheel click on
+        XWayland, whose helper clicks once per 40 units), GTK 4 2.5 pixels per
+        pixel (MAGIC_SCROLL_FACTOR), Chromium twelve pixels per pixel, and Qt
+        three rows or lines per wheel notch (its default wheelScrollLines).
+        Others get touchpad pixels (wheel clicks of 40 on XWayland)."""
+        xwayland = bool(client.get("xwayland"))
         try:
             obj = self.resolve(client, ident) if ident is not None else self.at_point(client, *point)
             if obj is None:
@@ -1015,21 +1017,41 @@ class Accessibility:
             name, major = self.toolkit(client)
         except Exception:
             return pixels, {}
-        if name.startswith("gtk") and major == "3":
+        if (name.startswith("gtk") or name == "gail") and major == "3":
             page = self.viewport_of(client, obj, horizontal)
             unit = min(page ** (2 / 3), page / 2)
-            return (pixels * 10 / unit if unit > 0 else pixels), {}
+            if unit <= 0:
+                return pixels, {}
+            if xwayland:
+                return 40 * max(1, round(pixels / unit)), {}
+            return pixels * 10 / unit, {}
+        if xwayland:
+            return pixels, {}
         if name.startswith("gtk") and major == "4":
             return pixels / 2.5, {}
         if name == "chromium":
-            notches = max(1, round(pixels))
-            return notches / 12, {"source": "wheel", "value120": notches}
+            # Chromium flings touchpad input when a later frame stops it; a
+            # stop in the axis frame scrolls exactly the deltas, at once (a
+            # wheel would animate, which a hidden window does not render).
+            return pixels / 12, {"momentum": False}
         if name == "qt":
-            pitch = self.row_pitch(obj, horizontal)
+            pitch = self.row_pitch(obj, horizontal) or (None if horizontal else self.line_pitch(obj))
             # Whole rows only, never more than were asked for, so nothing is skipped.
             notches = max(1, int(pixels // pitch)) * 40 if pitch else max(1, round(pixels * 2))
             return notches / 12, {"source": "wheel", "value120": notches}
         return pixels, {}
+
+    def line_pitch(self, obj):
+        """Line height of a multi-line text view (Qt's plain text edit
+        scrolls by lines), or None."""
+        try:
+            if not obj.is_text() or not obj.get_state_set().contains(self.api.StateType.MULTI_LINE) \
+                    or not obj.get_character_count():
+                return None
+            height = self.api.Text.get_character_extents(obj, 0, self.api.CoordType.WINDOW).height
+            return height if height > 0 else None
+        except Exception:
+            return None
 
     def toolkit(self, client):
         """(toolkit name in lower case, major version) of the window's application."""

@@ -104,7 +104,7 @@ def type_text(client, value):
     extras = set()
     for char in value:
         new = ord(char) > 126 and char not in extras
-        if len(chunk) >= 512 or (new and len(extras) >= 32):
+        if len(chunk) >= 512 or (new and len(extras) >= 16):  # the module has 19 spare keys
             send(client, 'text', text=chunk)
             with refreshing(client):
                 pass

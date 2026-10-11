@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import itertools
 import fcntl
 import io
 import math
@@ -47,6 +49,25 @@ def duration(p):
     return value or None
 
 
+# Presses this close (logical pixels) can join into a toolkit multi-click; GTK
+# and Qt use 5, Chromium a few more.
+MULTI_CLICK_DISTANCE = 16
+
+
+@functools.cache
+def multi_click_interval():
+    """Seconds after which toolkits no longer join presses into a multi-click:
+    the desktop's double-click time (GTK, Qt and Chromium default to 400 ms),
+    with a margin for event delivery."""
+    milliseconds = 400
+    with contextlib.suppress(Exception):
+        from gi.repository import Gio
+        schema = 'org.gnome.desktop.peripherals.mouse'
+        if Gio.SettingsSchemaSource.get_default().lookup(schema, True):
+            milliseconds = max(milliseconds, Gio.Settings.new(schema).get_int('double-click'))
+    return milliseconds / 1000 + .1
+
+
 KEY_ALIASES = {"Control_L": "ctrl", "Control_R": "ctrl", "Shift_L": "shift", "Shift_R": "shift",
                "Alt_L": "alt", "Alt_R": "altgr", "Super_L": "super", "Super_R": "super"}
 MODIFIER_KEYS = {"ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L", "logo": "Super_L", "altgr": "ISO_Level3_Shift"}
@@ -85,6 +106,7 @@ class Backend:
         self.holds = {}
         self.hold_epoch = None
         self.dragging = None
+        self.last_press = None  # (address, button, x, y, time) of the last synthetic press
         self.clipboards = {}
 
     def defer_observation(self, params):
@@ -379,12 +401,22 @@ class Backend:
             raise RuntimeError("No active application window")
         return self.target({"id": int(c["address"], 16)})
 
-    def input_target(self, c, x, y):
+    def input_target(self, c, x, y, near=None):
         if c is not None:
             return c, x, y
         # A global coordinate targets its visible topmost application without
         # changing focus. App-bound CUA operations already supply the window.
+        # Only windows on that screen count: a shown workspace, or for a drag
+        # the source window's workspace (the agent's hidden workspace is the
+        # screen it drags on). Windows of other workspaces share coordinates,
+        # and a user's window there must never receive the agent's input.
+        if near is not None:
+            screens = {near.get("workspace", {}).get("id")}
+        else:
+            screens = {m["activeWorkspace"]["id"] for m in self.hypr.query("monitors")}
+            screens |= {m["specialWorkspace"]["id"] for m in self.hypr.query("monitors") if m.get("specialWorkspace", {}).get("id")}
         matches = [v for v in self.clients() if v.get("visible", False)
+                   and (v.get("workspace", {}).get("id") in screens or (near is None and v.get("pinned")))
                    and v["at"][0] <= x < v["at"][0] + v["size"][0]
                    and v["at"][1] <= y < v["at"][1] + v["size"][1]]
         if not matches:
@@ -541,18 +573,39 @@ class Backend:
             with self.holding(c, names):
                 self.press_button(c, x, y, button, count, hold)
 
+    def separate_press(self, c, x, y, button):
+        """Keep a press from joining the previous one into a multi-click.
+
+        macOS posts every click with its own click count, so two click calls
+        are two single clicks. Linux toolkits count clicks themselves from the
+        time and distance between presses; wait out their interval when this
+        press would otherwise extend the previous press there.
+        """
+        last = self.last_press
+        if last and last[:2] == (c["address"], button) and math.dist(last[2:4], (x, y)) <= MULTI_CLICK_DISTANCE:
+            wait = last[4] + multi_click_interval() - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+
+    def pressed(self, c, x, y, button):
+        self.last_press = (c["address"], button, x, y, time.monotonic())
+
     def press_button(self, c, x, y, button, count, hold):
-        if hold is None or c.get("xwayland"):
-            fields = {} if hold is None else {"duration": round(hold)}
-            background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
-            return
-        # Hold the Wayland button across a real interval without blocking the compositor.
-        for _ in range(count):
-            background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
-            try:
-                time.sleep(hold / 1000)
-            finally:
-                background.send(c, "drag_cancel")
+        self.separate_press(c, x, y, button)
+        try:
+            if hold is None or c.get("xwayland"):
+                fields = {} if hold is None else {"duration": round(hold)}
+                background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
+                return
+            # Hold the Wayland button across a real interval without blocking the compositor.
+            for _ in range(count):
+                background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
+                try:
+                    time.sleep(hold / 1000)
+                finally:
+                    background.send(c, "drag_cancel")
+        finally:
+            self.pressed(c, x, y, button)
 
     def scroll(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -574,22 +627,21 @@ class Backend:
             pixels = pages * extent
         else:
             pixels = number(p.get("pixels", 500), "pixels")
+        if not 0 < pixels <= 8388607:
+            raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         names = chord(p["key"])[2] if "key" in p else ()
         self.pointer_free()
         x, y = self.location(p, c)
-        axis, extra = pixels, {}
-        if c and not c.get("xwayland"):
-            # Each toolkit scales Wayland scroll input its own way (GTK 3 would
-            # move a list about four pages for one page of input); send what
-            # moves the content by the requested distance.
-            ident = text(p["element_id"], "element_id", False) if "element_id" in p else None
-            axis, extra = self.ax.scroll_input(c, pixels, ident, (x, y), directions[p["direction"]][0] != 0)
-        if not 0 < axis <= 8388607:
-            raise ValueError("pixels must be positive and fit Wayland's signed 24.8 coordinates")
         self.point(c, x, y)
         dx, dy = directions[p["direction"]]
+        ident = text(p["element_id"], "element_id", False) if c and "element_id" in p else None
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
+            # Each toolkit scales scroll input its own way (GTK 3 would move a
+            # list about four pages for one page of input); send what moves
+            # the content under the target by the requested distance.
+            axis, extra = self.ax.scroll_input(c, pixels, ident, (x, y), dx != 0)
+            axis = min(axis, 8388607)
             with self.holding(c, names):
                 background.send(c, "scroll", x=x, y=y, dx=dx * axis, dy=dy * axis, **extra)
 
@@ -609,17 +661,19 @@ class Backend:
             source, x, y = self.input_target(c, *points[0])
             end_x, end_y = points[1]
             if c is None:
-                destination, end_x, end_y = self.input_target(None, end_x, end_y)
+                destination, end_x, end_y = self.input_target(None, end_x, end_y, near=source)
             elif 0 <= end_x < c["size"][0] and 0 <= end_y < c["size"][1]:
                 destination = source
             else:
-                destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y)
+                destination, end_x, end_y = self.input_target(None, c["at"][0] + end_x, c["at"][1] + end_y, near=source)
             self.trust.guard_client(destination)
             self.trust.guard_auth_client(destination, False)
             with self.holding(source, names):
                 self.drag_between(source, destination, x, y, end_x, end_y)
 
     def drag_between(self, source, destination, x, y, end_x, end_y):
+        self.separate_press(source, x, y, "left")
+        self.pressed(source, x, y, "left")
         if source.get("xwayland") or destination.get("xwayland"):
             if not source.get("xwayland") or not destination.get("xwayland"):
                 raise ValueError("Mixed Wayland/XWayland drag-and-drop requires the compositor data bridge")
@@ -653,7 +707,24 @@ class Backend:
             if c.get("xwayland") and any(ord(char) > 127 for char in value):
                 self.ax.insert_focused_text(c, value)
             else:
-                background.type_text(c, value)
+                self.type_keys(c, value)
+
+    def type_keys(self, c, value):
+        """Type text as key events into a Wayland window's keyboard focus."""
+        if not any(ord(char) > 0xFFFF for char in value) or self.ax.toolkit(c)[0] != "chromium":
+            background.type_text(c, value)
+            return
+        # A Chromium key event carries one UTF-16 unit, so characters beyond
+        # it (emoji) typed as keys are dropped. macOS types any Unicode
+        # string; paste those through a private offer (the desktop clipboard
+        # is untouched) between the typed runs.
+        from .clipboard import paste
+        for beyond, chars in itertools.groupby(value, lambda char: ord(char) > 0xFFFF):
+            part = "".join(chars)
+            if beyond:
+                paste(c, part, "text")
+            else:
+                background.type_text(c, part)
 
     def press_key(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -737,8 +808,9 @@ class Backend:
                     background.send(source, "button", x=x, y=y, button="left", state="up")
                     return
                 try:
-                    status = background.send(source, "drag_status")
                     target = drag["target"]
+                    self.service(source, target)
+                    status = background.send(source, "drag_status")
                     deadline = time.monotonic() + .75
                     while status["dnd"] and not status["accepted"] and time.monotonic() < deadline:
                         background.send(target, "drag_move", x=drag["x"] - target["at"][0], y=drag["y"] - target["at"][1])
@@ -769,10 +841,13 @@ class Backend:
             self.pointer_free()
             with self.seat(c):
                 source, sx, sy = self.input_target(None, x, y) if not c else self.input_target(c, x - c["at"][0], y - c["at"][1])
+                self.separate_press(source, sx, sy, "left")
+                self.pressed(source, sx, sy, "left")
                 if source.get("xwayland"):
                     background.send(source, "button", x=sx, y=sy, button="left", state="down")
                 else:
                     background.send(source, "drag_begin", x=sx, y=sy, timeout=600000, focus=True)
+                    self.service(source)
                 self.dragging = {"source": source, "target": source, "x": source["at"][0] + sx, "y": source["at"][1] + sy}
             return
         if not self.dragging:
@@ -785,7 +860,7 @@ class Backend:
             else:
                 # An app-started drag-and-drop goes to the Wayland window under the point.
                 try:
-                    target = self.input_target(None, x, y)[0]
+                    target = self.input_target(None, x, y, near=source)[0]
                 except ValueError:
                     target = source
                 if target.get("xwayland"):
@@ -797,7 +872,20 @@ class Backend:
                         self.dragging = None
                         raise RuntimeError("The drag was already released by physical input or its timeout") from None
                     raise
+                self.service(source, target)
             self.dragging.update(x=x, y=y, target=target)
+
+    def service(self, *clients):
+        """Let hidden windows handle a held drag's step before the next one.
+
+        A window on a hidden workspace gets no frame callbacks, and GTK then
+        holds its input: the motions of separate drag_handle steps merge into
+        the last, and a drag-and-drop the app would start on the way never
+        starts. As an observation does, service the frame callbacks."""
+        for client in {c["address"]: c for c in clients}.values():
+            if not client.get("xwayland") and not self.visible(client):
+                with background.refreshing(client):
+                    pass
 
     def select_text(self, p):
         c = self.target(p.get("window"))
@@ -852,7 +940,7 @@ class Backend:
         elif c.get("xwayland") and any(ord(char) > 127 for char in value):
             self.ax.insert_focused_text(c, value)
         else:
-            background.type_text(c, value)
+            self.type_keys(c, value)
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))
