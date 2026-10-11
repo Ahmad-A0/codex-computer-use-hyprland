@@ -1,0 +1,77 @@
+<!doctype html><meta charset="utf-8"><title>Codex E2E Widgets</title>
+<!-- Disposable page for tests/e2e/cases/widgets.mjs: labelled form controls,
+     ARIA widgets, disabled and hidden buttons, an ARIA tab set, a contenteditable
+     region, a form inside an iframe, and controls far below the fold. The page's
+     state is mirrored as JSON into the window title, which tests read from
+     Hyprland, so results come from the browser itself. -->
+<style>
+body{font:16px sans-serif;margin:16px}label,fieldset,div,button,select{margin:4px 0}
+[role=switch],[role=tab]{display:inline-block;border:1px solid #888;padding:4px 10px;cursor:pointer}
+[aria-checked=true],[aria-selected=true]{background:#cde}
+#notes{border:1px solid #888;min-height:40px;padding:4px}iframe{width:90%;height:70px;border:1px solid #888}
+</style>
+<h1>Codex E2E Widgets</h1>
+<div><label for="email">Email address</label> <input id="email" type="email"></div>
+<div><label><input type="checkbox" id="terms"> Accept terms</label></div>
+<fieldset><legend>Plan</legend>
+  <label><input type="radio" name="plan" value="free" checked> Free</label>
+  <label><input type="radio" name="plan" value="pro"> Pro</label></fieldset>
+<div><label for="country">Country</label> <select id="country">
+  <option>Norway</option><option>Japan</option><option>Kenya</option><option>Peru</option></select></div>
+<div><label for="volume">Volume</label> <input id="volume" type="range" min="0" max="100" value="10"></div>
+<div><span id="dark" role="switch" aria-checked="false" tabindex="0">Dark mode</span></div>
+<div><button type="button" id="disabled" disabled>Disabled submit</button>
+  <button type="button" id="hidden" style="display:none">Hidden submit</button>
+  <button type="button" id="invisible" style="visibility:hidden">Invisible submit</button></div>
+<div role="tablist" aria-label="Sections">
+  <span role="tab" id="tab-a" aria-selected="true" aria-controls="panel-a" tabindex="0">Overview</span>
+  <span role="tab" id="tab-b" aria-selected="false" aria-controls="panel-b" tabindex="-1">Details</span></div>
+<div role="tabpanel" id="panel-a" aria-labelledby="tab-a"><button type="button" id="overview">Overview action</button></div>
+<div role="tabpanel" id="panel-b" aria-labelledby="tab-b" hidden><button type="button" id="details">Details action</button></div>
+<div id="notes" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Notes">Draft</div>
+<iframe id="frame" title="Embedded form"></iframe>
+<div style="height:2400px"></div>
+<div><label><input type="checkbox" id="far"> Far checkbox</label></div>
+<div><button type="button" id="farButton">Far button</button></div>
+<script>
+const s = {email: '', terms: false, plan: 'free', country: 'Norway', volume: 10, dark: false, tab: 'a',
+  notes: 'Draft', frame: '', frameClicks: 0, far: false, farClicks: 0, disabled: 0, hidden: 0, invisible: 0,
+  overview: 0, details: 0, y: 0};
+const $ = (id) => document.getElementById(id);
+const sync = () => { s.y = Math.round(scrollY); document.title = 'Codex E2E Widgets|' + JSON.stringify(s); };
+$('email').addEventListener('input', (e) => { s.email = e.target.value; sync(); });
+$('terms').addEventListener('change', (e) => { s.terms = e.target.checked; sync(); });
+for (const r of document.querySelectorAll('[name=plan]')) r.addEventListener('change', (e) => { s.plan = e.target.value; sync(); });
+$('country').addEventListener('change', (e) => { s.country = e.target.value; sync(); });
+$('volume').addEventListener('input', (e) => { s.volume = Number(e.target.value); sync(); });
+$('volume').addEventListener('change', (e) => { s.volume = Number(e.target.value); sync(); });
+const toggleDark = () => { s.dark = !s.dark; $('dark').setAttribute('aria-checked', String(s.dark)); sync(); };
+$('dark').addEventListener('click', toggleDark);
+$('dark').addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleDark(); } });
+for (const id of ['disabled', 'hidden', 'invisible', 'overview', 'details']) $(id).addEventListener('click', () => { s[id]++; sync(); });
+const select = (tab) => {
+  s.tab = tab;
+  for (const t of ['a', 'b']) {
+    $('tab-' + t).setAttribute('aria-selected', String(t === tab));
+    $('tab-' + t).tabIndex = t === tab ? 0 : -1;
+    $('panel-' + t).hidden = t !== tab;
+  }
+  sync();
+};
+$('tab-a').addEventListener('click', () => select('a'));
+$('tab-b').addEventListener('click', () => select('b'));
+$('notes').addEventListener('input', () => { s.notes = $('notes').innerText.trim(); sync(); });
+$('far').addEventListener('change', (e) => { s.far = e.target.checked; sync(); });
+$('farButton').addEventListener('click', () => { s.farClicks++; sync(); });
+addEventListener('scroll', sync);
+addEventListener('message', (e) => {
+  if (e.data && e.data.frame !== undefined) { s.frame = e.data.frame; s.frameClicks = e.data.clicks; sync(); }
+});
+// The embedded form reports to the page by message, as cross-origin frames do.
+$('frame').srcdoc = '<!doctype html><meta charset="utf-8"><body style="font:16px sans-serif;margin:8px">'
+  + '<label>Frame field <input id="f"></label> <button type="button" id="b">Frame button</button><script>'
+  + 'let clicks = 0; const report = () => parent.postMessage({frame: f.value, clicks}, "*");'
+  + 'f.addEventListener("input", report); b.addEventListener("click", () => { clicks++; report(); });'
+  + '<\/script>';
+sync();
+</script>
