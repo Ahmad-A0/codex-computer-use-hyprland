@@ -153,6 +153,8 @@ def chooser(action, title, folder):
 
     # Where keyboard focus moves inside the dialog (a popover closes when it leaves it).
     dialog.connect('set-focus', lambda _, widget: event('set-focus', title, type(widget).__name__ if widget else None))
+    dialog.connect('focus-in-event', lambda *_: (event('focus-in', title), False)[-1])
+    dialog.connect('focus-out-event', lambda *_: (event('focus-out', title), False)[-1])
     dialog.connect('selection-changed', selected)
     dialog.connect('response', respond)
     dialog.show_all()
