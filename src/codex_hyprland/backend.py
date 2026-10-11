@@ -15,7 +15,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from .accessibility import Accessibility, LAUNCH_ENVIRONMENT
+from .accessibility import Accessibility, LAUNCH_ENVIRONMENT, NoBounds, TextNotRetained
 from . import background, session, desktop, guards
 
 
@@ -422,8 +422,7 @@ class Backend:
         if "element_id" in p:
             if not c or "x" in p or "y" in p:
                 raise ValueError("An element requires one window and no coordinates")
-            self.rendered(c)
-            return self.ax.point(c, text(p["element_id"], "element_id", False), reveal=False)
+            return self.element_point(c, text(p["element_id"], "element_id", False), reveal=False)
         if c and "x" not in p and "y" not in p:
             return c["size"][0] / 2, c["size"][1] / 2
         origin = self.capture_origins.get(c["address"], (0, 0)) if c else (0, 0)
@@ -472,6 +471,21 @@ class Backend:
             with background.refreshing(c):
                 pass
 
+    def element_point(self, c, ident, reveal=True):
+        """Where to click an element (see Accessibility.point) once the window
+        has rendered. Firefox reports no extents for page content changed since
+        its last paint, and a window on a hidden workspace paints only when let
+        to: allow it a moment."""
+        deadline = time.monotonic() + 1.5
+        while True:
+            self.rendered(c)
+            try:
+                return self.ax.point(c, ident, render=lambda: self.rendered(c), reveal=reveal)
+            except NoBounds:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(.1)
+
     def get_window_state(self, p):
         c = self.target(p.get("window"))
         include = p.get("include_screenshot", True)
@@ -518,8 +532,7 @@ class Backend:
                 return
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
-            self.rendered(c)
-            x, y = self.ax.point(c, ident, render=lambda: self.rendered(c))
+            x, y = self.element_point(c, ident)
         else:
             x, y = self.location(p, c)
         self.point(c, x, y)
@@ -804,24 +817,42 @@ class Backend:
         value = text(p.get("value"), "value")
         with self.seat(c):
             self.trust.guard_password_field(c, False)
+            render = lambda: self.rendered(c)
             if not self.ax.typed_value(c, ident):
-                self.ax.set_value(c, ident, value, render=lambda: self.rendered(c))
-                return
-            # Rich text (a web page's contenteditable) has text but no
-            # replaceable value: as a user does, focus it, select all of it and
-            # type the value over it.
-            with self.app_action(c):
-                if c.get("xwayland"):
-                    background.send(c, "hold")
-                self.ax.focus_editable(c, ident, restore=False)
-                self.ax.select_all(c, ident)
-            if not value:
-                background.send(c, "key", key="BackSpace", modifiers=[])
-            elif c.get("xwayland") and any(ord(char) > 127 for char in value):
-                self.ax.insert_focused_text(c, value)
+                # Under the app's keyboard focus, so that a field set_value has
+                # to focus (Firefox) takes it as in an active window.
+                with self.app_action(c):
+                    try:
+                        self.ax.set_value(c, ident, value, render=render)
+                        return
+                    except TextNotRetained as ignored:
+                        if not ignored.focused:
+                            raise
+                    # Firefox ignores AT-SPI text replacement in web pages:
+                    # replace the focused field's text as a user does, select
+                    # all and type.
+                    background.send(c, "key", key="a", modifiers=["Control"])
+                    self.type_over(c, value)
             else:
-                background.type_text(c, value)
-            self.ax.verify_text(c, ident, value, render=lambda: self.rendered(c))
+                # Rich text (a web page's contenteditable) has text but no
+                # replaceable value: as a user does, focus it, select all of it
+                # and type the value over it.
+                with self.app_action(c):
+                    if c.get("xwayland"):
+                        background.send(c, "hold")
+                    self.ax.focus_editable(c, ident, restore=False)
+                    self.ax.select_all(c, ident)
+                self.type_over(c, value)
+            self.ax.verify_text(c, ident, value, render=render)
+
+    def type_over(self, c, value):
+        """Type value over the focused field's selection."""
+        if not value:
+            background.send(c, "key", key="BackSpace", modifiers=[])
+        elif c.get("xwayland") and any(ord(char) > 127 for char in value):
+            self.ax.insert_focused_text(c, value)
+        else:
+            background.type_text(c, value)
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))

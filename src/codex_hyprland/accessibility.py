@@ -37,6 +37,16 @@ CLIP_ROLES = ("scroll pane", "viewport", "list", "list box", "table", "tree tabl
 # Selectable items whose name is a closed combo box's value.
 CHOICE_ROLES = ("menu item", "list item", "check menu item", "radio menu item", "option", "table cell")
 OBJECT_REPLACEMENT = "\ufffc"
+# Containers whose children belong to the tree only while shown. As on macOS,
+# a closed menu's items appear when it opens; GTK 3 lists every item of a
+# closed menu bar, which in LibreOffice (about 1,300) exhausts the node budget
+# before the document is reached. Containers that manage their descendants
+# and have more children than an observation can list (a spreadsheet's
+# millions of cells) likewise contribute only shown ones; a list's rows
+# scrolled out of view stay, as in any other container.
+SHOWN_CHILDREN_ROLES = ("popup menu", "menu", "combo box")
+# Children an observation reads per element (and elements per observation).
+NODE_BUDGET = 1500
 
 
 def number_text(value):
@@ -46,10 +56,22 @@ def number_text(value):
     return str(int(value)) if float(value).is_integer() else f"{value:.6g}"
 
 
+def numeric(value):
+    """A finite number from a setValue string, or None."""
+    import math
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def action_names(obj):
     """Action names by index; an action the toolkit fails to describe is "".
     GTK 4 exposes an Action interface on some objects (the label of an
-    insensitive button) whose actions cannot be read."""
+    insensitive button, Nautilus and GNOME Text Editor widgets) whose actions
+    it counts but cannot name ("No action with index 0"); one such element must
+    not fail the whole observation or hide the others' actions."""
     names = []
     try:
         count = obj.get_n_actions()
@@ -67,6 +89,18 @@ def on_screen(rect):
     """AT-SPI extents that describe a real on-screen box (GTK reports G_MININT
     coordinates for cells and widgets it is not drawing)."""
     return rect.width > 0 and rect.height > 0 and rect.x > -(1 << 30) and rect.y > -(1 << 30)
+
+
+class NoBounds(ValueError):
+    """An element without usable extents (yet: Firefox reports none until it repaints)."""
+
+
+class TextNotRetained(RuntimeError):
+    """A text replacement the application ignored; focused if the field took focus."""
+
+    def __init__(self, focused):
+        super().__init__('Application did not retain the replacement value')
+        self.focused = focused
 
 
 def enable_session_accessibility():
@@ -448,22 +482,22 @@ class Accessibility:
                 popups = self.popups(client, root)
         elements, seen, offsets = {}, set(), {}
         deadline = time.monotonic() + 8
-        limit = 1500
+        limit = NODE_BUDGET
         truncated = False
 
         from gi.repository import GLib
 
-        def walk(obj, depth=0, popup=False, offset=None):
+        def walk(obj, depth=0, popup=False, offset=None, shown_only=False):
             # Elements can be destroyed while they are read (a closing window,
             # menu or dialog): they are gone, not an error.
             try:
-                return visit(obj, depth, popup, offset)
+                return visit(obj, depth, popup, offset, shown_only)
             except GLib.Error:
                 if depth == 0:
                     raise ValueError("AT-SPI window disappeared during observation") from None
                 return None
 
-        def visit(obj, depth, popup, offset):
+        def visit(obj, depth, popup, offset, shown_only):
             nonlocal truncated
             if len(seen) >= limit or depth > 40 or time.monotonic() > deadline:
                 truncated = True
@@ -471,11 +505,13 @@ class Accessibility:
             ident = self.identity(obj)
             if ident in seen:
                 return None
-            seen.add(ident)
             obj.clear_cache()
             states = obj.get_state_set()
             if states.contains(self.api.StateType.DEFUNCT):
                 return None
+            if shown_only and not states.contains(self.api.StateType.SHOWING):
+                return None  # A closed menu's item or an off-screen cell; not counted against the budget.
+            seen.add(ident)
             role = obj.get_role_name()
             node = {"id": ident, "role": role, "name": self.name(obj, role),
                     "states": [], "actions": [], "children": []}
@@ -511,20 +547,23 @@ class Accessibility:
                 if choice:
                     node["value"] = choice
             elements[ident] = (obj, role, node["name"])
+            count = obj.get_child_count()
+            shown_children = role in SHOWN_CHILDREN_ROLES or (
+                count > NODE_BUDGET and states.contains(self.api.StateType.MANAGES_DESCENDANTS))
             if popup:
                 offsets[ident] = offset
             # A GTK 3 notebook lists every page below its tab; as on macOS,
             # only the current page's content is part of the window.
             inactive_tab = (role == "page tab" and "selected" not in node["states"]
                             and states.contains(self.api.StateType.SELECTABLE))
-            for i in range(min(obj.get_child_count(), 1500)):
+            for i in range(min(count, NODE_BUDGET)):
                 child = obj.get_child_at_index(i)
                 if child is not None and inactive_tab:
                     child.clear_cache()
                     if not child.get_state_set().contains(self.api.StateType.SHOWING):
                         continue
                 if child is not None:
-                    item = walk(child, depth + 1, popup, offset)
+                    item = walk(child, depth + 1, popup, offset, shown_children)
                     if item is not None:
                         node["children"].append(item)
                 if truncated:
@@ -680,14 +719,15 @@ class Accessibility:
         controls (or outside the window); clicking there would act on whatever
         is drawn there instead. Like macOS, an element not fully on screen is
         first scrolled into view (when ``reveal`` and the toolkit can do that);
-        one still not on screen is refused. ``render`` lets a window on a
-        hidden workspace lay out after scrolling."""
+        one still not on screen is refused, and one without extents raises
+        NoBounds. ``render`` lets a window on a hidden workspace lay out after
+        scrolling."""
         obj = self.resolve(client, ident)
         offsets = self.offsets.get(client["address"], {})
         if ident in offsets:
             rect = obj.get_extents(self.api.CoordType.WINDOW)
             if rect.width <= 0 or rect.height <= 0:
-                raise ValueError("Element has no usable bounds")
+                raise NoBounds("Element has no usable bounds")
             # Popup elements report extents relative to their popup surface.
             if offsets[ident] is None:
                 raise ValueError("This menu element's position is unknown; use its accessibility action or screenshot coordinates")
@@ -714,6 +754,10 @@ class Accessibility:
         # A sliver of a row at a list's edge is often its border, not the row.
         if part is not None and (part[2] - part[0] < min(rect.width, 8) or part[3] - part[1] < min(rect.height, 8)):
             part = None
+        if part is None and (rect.width <= 0 or rect.height <= 0):
+            # Firefox reports no extents for page content changed since its
+            # last paint; the caller may let the window render and ask again.
+            raise NoBounds("Element has no usable bounds")
         if part is None:
             raise ValueError("Element is scrolled out of view or not on screen; scroll it into view and refresh getAXState()")
         return (part[0] + part[2]) / 2, (part[1] + part[3]) / 2
@@ -747,6 +791,12 @@ class Accessibility:
             return 0, 0  # Toolkits report G_MININT for what they do not draw.
         return (inner.x - outer.x) - (top.x - base.x), (inner.y - outer.y) - (top.y - base.y)
 
+    def drawn(self, obj):
+        """Whether an element is showing, visible and has an on-screen box."""
+        states = obj.get_state_set()
+        return (states.contains(self.api.StateType.SHOWING) and states.contains(self.api.StateType.VISIBLE)
+                and on_screen(obj.get_extents(self.api.CoordType.WINDOW)))
+
     def primary_action(self, client, ident, button):
         obj = self.resolve(client, ident)
         if not obj.is_action():
@@ -755,6 +805,14 @@ class Accessibility:
             # Click a menu item in an open popup like a user does: Qt's press
             # action triggers the item but leaves its menu open, unlike macOS.
             return None
+        if button == "left" and obj.get_role_name() == "menu" and self.drawn(obj):
+            parent = obj.get_parent()
+            if parent is not None and parent.get_role_name() == "menu bar":
+                # Open a visible menu bar's menu as a user's click does: GTK 3's
+                # click action on a menu bar item (Mousepad, LibreOffice) opens
+                # the bar's first menu instead. A hidden menu bar (Firefox's)
+                # keeps its action.
+                return None
         names = ("click", "press", "dodefault") if button == "left" else ("showcontextmenu", "show context menu", "menu")
         # Chromium exposes link activation as "jump", including offscreen
         # links. It is a primary action, unlike an entry's "activate" action.
@@ -832,7 +890,8 @@ class Accessibility:
     def retained(check, timeout=1.5, render=None):
         """Whether check() holds within the timeout. Chromium applies values
         set through AT-SPI asynchronously, and updates its tree only while it
-        renders (``render`` lets a window on a hidden workspace render)."""
+        renders (``render`` lets a window on a hidden workspace render);
+        Firefox applies them in its content process."""
         deadline = time.monotonic() + timeout
         while True:
             if check():
@@ -845,41 +904,50 @@ class Accessibility:
 
     def set_numeric(self, obj, value, render=None):
         import math
-        try:
-            numeric = float(value)
-        except ValueError:
-            raise ValueError('This control requires a numeric value') from None
-        if not math.isfinite(numeric) or not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
+        number = numeric(value)
+        if number is None:
+            raise ValueError('This control requires a numeric value')
+        if not obj.get_minimum_value() <= number <= obj.get_maximum_value():
             raise ValueError('Value is outside the control range')
-        if not obj.set_current_value(numeric):
+        if not obj.set_current_value(number):
             raise RuntimeError('Application refused the numeric value')
-        if not self.retained(lambda: (obj.clear_cache(), math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6))[1],
+        if not self.retained(lambda: (obj.clear_cache(), math.isclose(obj.get_current_value(), number, rel_tol=1e-6, abs_tol=1e-6))[1],
                              render=render):
             raise RuntimeError('Application did not retain the numeric value')
 
     def set_value(self, client, ident, value, render=None):
-        import math
         obj = self.resolve(client, ident)
-        if obj.is_editable_text() and obj.is_value() and obj.get_role_name() == "spin button":
+        if obj.get_role_name() == "spin button" and obj.is_value() and numeric(value) is not None:
             # A spin button's text is only an editor for its value: GTK applies
             # typed text on activation or focus loss, so replacing the text
-            # would leave the value unchanged. Numbers set the value itself.
+            # would leave the value (Mousepad's tab width) unchanged. Numbers
+            # set the value itself; the text is the fallback.
             try:
-                numeric = float(value)
-            except ValueError:
-                numeric = math.nan
-            if math.isfinite(numeric):
                 self.set_numeric(obj, value, render)
                 return
+            except RuntimeError:
+                if not obj.is_editable_text():
+                    raise
         if obj.is_editable_text():
             if not self.api.EditableText.set_text_contents(obj, value):
                 raise RuntimeError('Application refused the replacement value')
             # Password fields must not be read back or included in diagnostics.
-            if obj.get_role_name() != 'password text' and obj.is_text():
-                if not self.retained(lambda: (obj.clear_cache(), self.api.Text.get_text(obj, 0, obj.get_character_count()))[1] == value,
-                                     render=render):
-                    raise RuntimeError('Application did not retain the replacement value')
-            return
+            if obj.get_role_name() == 'password text' or not obj.is_text():
+                return
+            shows = lambda: (obj.clear_cache(), self.api.Text.get_text(obj, 0, obj.get_character_count()))[1] == value
+            if self.retained(shows, render=render):
+                return
+            # Firefox web pages ignore the replacement. Focus the field and try
+            # once more; if that fails too, the backend types the value into
+            # the focused field.
+            focused = lambda: (obj.clear_cache(), obj.get_state_set().contains(self.api.StateType.FOCUSED))[1]
+            if not focused() and obj.is_component() and obj.grab_focus():
+                deadline = time.monotonic() + .6
+                while not focused() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                if self.api.EditableText.set_text_contents(obj, value) and self.retained(shows, render=render):
+                    return
+            raise TextNotRetained(focused())
         if obj.is_value():
             self.set_numeric(obj, value, render)
             return
