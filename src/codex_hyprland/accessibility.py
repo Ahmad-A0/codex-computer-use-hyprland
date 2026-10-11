@@ -637,8 +637,17 @@ class Accessibility:
                 raise RuntimeError('Application did not apply the requested caret position')
 
     def set_value(self, client, ident, value):
-        import math
         obj = self.resolve(client, ident)
+        # A spin button's value is its number: GTK 3 replaces its text without
+        # changing the value until the field is activated or loses focus, so
+        # the app (Mousepad's tab width) never sees the change.
+        if obj.get_role_name() == 'spin button' and obj.is_value() and self.numeric(value) is not None:
+            try:
+                self.set_numeric(obj, value)
+                return
+            except RuntimeError:
+                if not obj.is_editable_text():
+                    raise
         if obj.is_editable_text():
             if not self.api.EditableText.set_text_contents(obj, value):
                 raise RuntimeError('Application refused the replacement value')
@@ -660,18 +669,37 @@ class Accessibility:
                     return
             raise TextNotRetained(obj, focused())
         if obj.is_value():
-            try:
-                numeric = float(value)
-            except ValueError:
-                raise ValueError('This control requires a numeric value') from None
-            if not math.isfinite(numeric) or not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
-                raise ValueError('Value is outside the control range')
-            if not obj.set_current_value(numeric):
-                raise RuntimeError('Application refused the numeric value')
-            if not math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6):
-                raise RuntimeError('Application did not retain the numeric value')
+            self.set_numeric(obj, value)
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
+
+    @staticmethod
+    def numeric(value):
+        import math
+        try:
+            number = float(value)
+        except ValueError:
+            return None
+        return number if math.isfinite(number) else None
+
+    def set_numeric(self, obj, value):
+        import math
+        numeric = self.numeric(value)
+        if numeric is None:
+            raise ValueError('This control requires a numeric value')
+        if not obj.get_minimum_value() <= numeric <= obj.get_maximum_value():
+            raise ValueError('Value is outside the control range')
+        if not obj.set_current_value(numeric):
+            raise RuntimeError('Application refused the numeric value')
+        # Firefox applies it in its content process, so it shows up late.
+        deadline = time.monotonic() + 1.0
+        while True:
+            obj.clear_cache()
+            if math.isclose(obj.get_current_value(), numeric, rel_tol=1e-6, abs_tol=1e-6):
+                return
+            if time.monotonic() > deadline:
+                raise RuntimeError('Application did not retain the numeric value')
+            time.sleep(.05)
 
     def retained(self, obj, value, timeout=1.0):
         """Whether a text element shows value, allowing for apps that update it asynchronously."""

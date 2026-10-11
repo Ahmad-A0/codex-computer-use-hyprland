@@ -65,7 +65,7 @@ writeFileSync(join(firefoxProfile, 'user.js'), Object.entries({
   'startup.homepage_welcome_url.additional': '', 'browser.startup.firstrunSkipsHomepage': true,
   'trailhead.firstrun.didSeeAboutWelcome': true, 'app.normandy.enabled': false, 'browser.translations.enable': false,
   'browser.sessionstore.resume_from_crash': false, 'browser.tabs.warnOnClose': false,
-  'intl.locale.requested': 'en-US', 'intl.regional_prefs.use_os_locales': false, 'intl.accept_languages': 'en-US, en',
+  'browser.newtab.preload': false, 'intl.locale.requested': 'en-US', 'intl.regional_prefs.use_os_locales': false, 'intl.accept_languages': 'en-US, en',
 }).map(([key, value]) => `user_pref(${JSON.stringify(key)}, ${JSON.stringify(value)});\n`).join(''));
 
 entry('codex-e2e-nautilus', 'Codex E2E Files', `${isolated} nautilus --new-window ${join(base, 'files')}`,
@@ -104,7 +104,8 @@ async function r2Find(app, source, flags, options) {
     }
     const hit = hits.at(nth);
     if (hit !== undefined) return hit;
-    if (Date.now() >= deadline) throw new Error(`No element matching /${source}/ in:\n${tree.slice(0, 8000)}`);
+    // The pattern goes last: tool errors keep only their end.
+    if (Date.now() >= deadline) throw new Error(`${tree.slice(0, 6000)}\nNo element matching /${source}/ in the tree above`);
     await new Promise((done) => setTimeout(done, 300));
   }
 }
@@ -240,7 +241,7 @@ export default function (test) {
       const known = addresses();
       await js(`await writer.pressKey("ctrl+shift+s");`);
       await opened('saveas', main.pid, known, /Save/i);
-      await js(`await saveas.setValue(${find('saveas', settable('Name'), { timeout: 10000 })}, ${JSON.stringify(file)});
+      await js(`await saveas.setValue(${find('saveas', settable('Name:?'), { timeout: 10000 })}, ${JSON.stringify(file)});
         await saveas.click(${find('saveas', button('Save'), { enabled: true })});`, { timeout: 30000 });
       await until(() => existsSync(file) && statSync(file).size > 0, 'saved document', 20000);
       let content = '';
@@ -277,9 +278,8 @@ export default function (test) {
       // file type list (a closed list shows no items), then name the file.
       await js(`await saveas.click(${find('saveas', /^combo box\b.*\(\.ods\)/, { timeout: 10000 })});
         await saveas.click(${find('saveas', item('Text CSV \\(\\.csv\\)'), { timeout: 5000, nth: -1 })});
-        // LibreOffice then gives the default name the type's extension; name the file after that.
-        ${find('saveas', holding('.*\\.csv'), { timeout: 10000 })};
-        await saveas.setValue(${find('saveas', settable('Name'))}, ${JSON.stringify(file)});
+        // The dialog's own name field ("Name:"), not its hidden rename popover's "Name".
+        await saveas.setValue(${find('saveas', settable('Name:'))}, ${JSON.stringify(file)});
         ${find('saveas', holding(file.replace(/[.]/g, '\\.')), { timeout: 3000 })};
         await saveas.click(${find('saveas', button('Save'), { enabled: true })});`, { timeout: 30000 });
       // LibreOffice asks whether to keep the non-ODF format. (The new dialog
@@ -318,8 +318,20 @@ export default function (test) {
         await attempt("type email", async () => { await form.click(${find('form', settable('Email'))}); await form.typeText("ada@example.org"); });
         // A native select: open its dropdown, then choose from the open list.
         await attempt("country", async () => {
-          await form.click(${find('form', el('combo box', 'Country|Choose…'))});
-          await form.click(${find('form', item('Japan'), { timeout: 5000, nth: -1 })});
+          const combo = ${find('form', el('combo box', 'Country|Choose…'))};
+          await form.click(combo);
+          try {
+            await form.click(${find('form', item('Japan'), { timeout: 4000, nth: -1 })});
+          } catch {
+            failed.push("country: the dropdown's list did not appear after a click");
+            try { // Diagnostic: does the accessibility action open it?
+              await form.performSecondaryAction(combo, "open");
+              await form.click(${find('form', item('Japan'), { timeout: 4000, nth: -1 })});
+              failed.push("country: its open action showed the list");
+            } catch (error) { failed.push("country: its open action did not show the list either"); }
+            // The focused select takes typed letters.
+            await form.typeText("Japan");
+          }
         });
         await attempt("radio", async () => form.click(${find('form', el('radio button', 'Pro'))}));
         await attempt("checkbox", async () => form.click(${find('form', el('check box', 'Subscribe to newsletter'))}));
@@ -341,7 +353,10 @@ export default function (test) {
         // Terms are required: the browser refuses the submission first.
         await js(`await form.click(${find('form', button('Place order'))});`);
         await until(() => title().startsWith('Codex E2E Form|invalid:terms'), 'submission refused without terms', 10000);
-        await js(`await form.click(${find('form', el('check box', 'Accept terms'))});
+        // Dismiss the browser's message, as a user does, then accept the terms.
+        await js(`await form.pressKey("Escape");
+          await form.click(${find('form', el('check box', 'Accept terms'))});
+          ${find('form', /^check box \([^)]*\bchecked\b[^)]*\) Accept terms/, { timeout: 5000 })};
           await form.click(${find('form', button('Place order'))});`);
         await until(() => title().startsWith('Codex E2E Form|submitted|'), 'form submitted', 10000);
       } catch (error) {
@@ -367,7 +382,7 @@ export default function (test) {
       await js(`await prefs.click(${find('prefs', el('check box', '.*[Ll]ine numbers.*'), { timeout: 10000 })});
         await prefs.click(${find('prefs', el('page tab', 'Editor'))});
         await prefs.setValue(${find('prefs', /^spin button \([^)]*settable[^)]*\) Value: 8(?:,|$)/, { timeout: 5000 })}, "3");
-        await prefs.click(${find('prefs', button('Close'))});`, { timeout: 30000 });
+        await prefs.pressKey("Escape");`, { timeout: 30000 });
       await until(() => !clients().some((c) => c.pid === main.pid && /Preferences/i.test(c.title)), 'preferences closed', 10000);
       await until(() => /show-line-numbers=true/.test(read(keyfile) ?? '') && /tab-width=(?:uint32 )?3\b/.test(read(keyfile)),
         'settings in the key file', 10000);
