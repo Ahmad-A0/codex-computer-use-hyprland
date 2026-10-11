@@ -1,0 +1,51 @@
+<!doctype html><meta charset="utf-8"><title>Codex E2E Form</title>
+<!-- Disposable order form for a real browser. What the form submits (or why
+     it refused to) is mirrored into the window title, which the test reads
+     from Hyprland, so the result comes from the browser itself. -->
+<style>
+body{font:16px sans-serif;margin:16px 24px}
+form{display:grid;grid-template-columns:10em 18em;gap:8px 12px;align-items:center}
+fieldset{grid-column:1/3;display:flex;gap:16px;margin:0;padding:4px 8px}
+textarea{height:3.5em}
+pre{white-space:pre-wrap;font-size:13px}
+</style>
+<form id="order">
+  <label for="name">Full name</label><input id="name" name="name">
+  <label for="email">Email</label><input id="email" name="email" type="email" required>
+  <label for="country">Country</label>
+  <select id="country" name="country">
+    <option value="">Choose…</option><option value="FR">France</option><option value="JP">Japan</option>
+    <option value="KE">Kenya</option><option value="PE">Peru</option>
+  </select>
+  <fieldset><legend>Plan</legend>
+    <label><input type="radio" name="plan" value="basic" checked> Basic</label>
+    <label><input type="radio" name="plan" value="pro"> Pro</label>
+    <label><input type="radio" name="plan" value="team"> Team</label>
+  </fieldset>
+  <fieldset><legend>Extras</legend>
+    <label><input type="checkbox" name="news" value="yes"> Subscribe to newsletter</label>
+    <label><input type="checkbox" name="gift" value="yes"> Gift wrap</label>
+    <label><input type="checkbox" name="terms" value="yes" required> Accept terms</label>
+  </fieldset>
+  <label for="start">Start date</label><input id="start" name="start" type="date">
+  <label for="seats">Seats</label><input id="seats" name="seats" type="number" min="1" max="50" value="1">
+  <label for="priority">Priority</label><input id="priority" name="priority" type="range" min="0" max="10" value="5">
+  <label for="notes">Delivery notes</label><textarea id="notes" name="notes"></textarea>
+  <span></span><button id="submit">Place order</button>
+</form>
+<pre id="result"></pre>
+<script>
+const form = document.getElementById('order');
+let submits = 0;
+form.addEventListener('invalid', (event) => {
+  document.title = `Codex E2E Form|invalid:${event.target.name}`;
+}, true);
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const data = {};
+  for (const [key, value] of new FormData(form)) data[key] = String(value).replace(/\r\n/g, '\n');
+  data.submits = ++submits;
+  document.getElementById('result').textContent = JSON.stringify(data, null, 1);
+  document.title = `Codex E2E Form|submitted|${JSON.stringify(data)}`;
+});
+</script>
