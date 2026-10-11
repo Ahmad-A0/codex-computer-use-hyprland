@@ -103,9 +103,19 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           claude_args: --model claude-opus-5-5 --max-turns 1000 --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+          # Headless: nothing wakes the agent for a background task, so suite
+          # runs (up to ~50 min with E2E_HYPRLAND=git) must fit in a foreground call.
+          settings: |
+            {"env": {"BASH_MAX_TIMEOUT_MS": "7200000", "BASH_DEFAULT_TIMEOUT_MS": "7200000",
+                     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}
           prompt: |
             You maintain this repository: a Hyprland provider for OpenAI's Codex computer-use
             interface. Read AGENTS.md, README.md and docs/DESIGN.md first and follow them.
+
+            You run headless in CI: the job ends as soon as you stop, and nothing will notify
+            or resume you. Run every command, including `./test`, in the foreground (Bash
+            timeout up to 7200000 ms), never in the background, and don't stop until your work
+            is pushed and the pull request opened or updated (or the issue commented on).
 
             Issue #${{ inputs.issue }} in ${{ github.repository }} reports that the end-to-end
             suite failed after an upstream update (OpenAI's chatgpt-bin package, which ships the
@@ -119,7 +129,7 @@ jobs:
             then builds Hyprland main in the VM, and your fix must also keep working with
             released Hyprland (`E2E_HYPRLAND=release ./test`); run both before opening the PR.
 
-            This is round ${{ inputs.round || '1' }} of 3. ${{ needs.existing.outputs.pr != '' && format('Pull request #{0} already exists for this issue and the checkout is its branch, fix/issue-{1}: an earlier round''s fix that did not pass verification. Read `gh pr view {0} --comments`: the independent review and the verification results (with run links; `gh run download <id>` fetches failing runs'' artifacts). Address every concern, or explain on the pull request why a concern is mistaken; then rerun the suite, push to the same branch, and comment on the pull request with what you changed. Do not open a new pull request.', needs.existing.outputs.pr, inputs.issue) || '' }}
+            This is round ${{ inputs.round || '1' }} of 3. ${{ needs.existing.outputs.pr != '' && format('Pull request #{0} already exists for this issue and the checkout is its branch, fix/issue-{1}: an earlier round''s fix that did not pass verification. Read `gh pr view {0} --comments`: the independent review and the verification results (with run links; `gh run download <id>` fetches failing runs'' artifacts). Address every concern, or explain on the pull request why a concern is mistaken (with source references; the reviewer reads those comments next round); then rerun the suite, push to the same branch (`git push --force-with-lease origin HEAD:fix/issue-{1}` if you rebased), and comment on the pull request with what you changed. Do not open a new pull request.', needs.existing.outputs.pr, inputs.issue) || '' }}
 
             1. Reproduce with `./test` (boots a disposable Arch VM with the latest packages,
                installs the provider like a user, runs the suite; E2E_ONLY=<regex> selects tests,
