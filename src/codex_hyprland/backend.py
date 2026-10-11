@@ -789,7 +789,10 @@ class Backend:
         value = text(p.get("value"), "value")
         with self.seat(c):
             self.trust.guard_password_field(c, False)
-            self.ax.set_value(c, ident, value)
+            # Under the app's keyboard focus, so that a field set_value has to
+            # focus (Firefox) takes it as in an active window.
+            with self.app_action(c):
+                self.ax.set_value(c, ident, value)
 
     def perform_secondary_action(self, p):
         c = self.target(p.get("window"))

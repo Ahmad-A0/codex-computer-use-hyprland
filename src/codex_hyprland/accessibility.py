@@ -31,7 +31,8 @@ MENU_ROLES = ("popup menu", "menu")
 # Containers whose children belong to the tree only while shown. As on macOS,
 # a closed menu's items appear when it opens; GTK 3 lists every item of a
 # closed menu bar, which in LibreOffice (about 1,300) exhausts the node budget
-# before the document is reached.
+# before the document is reached. Containers that manage their descendants
+# (a spreadsheet's millions of cells) likewise contribute only visible ones.
 SHOWN_CHILDREN_ROLES = ("popup menu", "menu", "combo box")
 
 
@@ -429,12 +430,14 @@ class Accessibility:
             if role != "password text" and obj.is_text():
                 node["value"] = self.api.Text.get_text(obj, 0, min(obj.get_character_count(), 4000))
             elements[ident] = (obj, role, node["name"])
+            shown_children = (role in SHOWN_CHILDREN_ROLES
+                              or states.contains(self.api.StateType.MANAGES_DESCENDANTS))
             if popup:
                 offsets[ident] = offset
             for i in range(min(obj.get_child_count(), 1500)):
                 child = obj.get_child_at_index(i)
                 if child is not None:
-                    item = walk(child, depth + 1, popup, offset, role in SHOWN_CHILDREN_ROLES)
+                    item = walk(child, depth + 1, popup, offset, shown_children)
                     if item is not None:
                         node["children"].append(item)
                 if truncated:
@@ -533,6 +536,13 @@ class Accessibility:
             return x + (rect.x + rect.width / 2) / scale, y + (rect.y + rect.height / 2) / scale
         return rect.x + rect.width / 2, rect.y + rect.height / 2
 
+    def on_screen(self, obj):
+        states = obj.get_state_set()
+        if not (states.contains(self.api.StateType.SHOWING) and states.contains(self.api.StateType.VISIBLE)):
+            return False
+        rect = obj.get_extents(self.api.CoordType.WINDOW)
+        return rect.width > 0 and rect.height > 0
+
     def primary_action(self, client, ident, button):
         obj = self.resolve(client, ident)
         if not obj.is_action():
@@ -541,6 +551,14 @@ class Accessibility:
             # Click a menu item in an open popup like a user does: Qt's press
             # action triggers the item but leaves its menu open, unlike macOS.
             return None
+        if button == "left" and obj.get_role_name() == "menu" and self.on_screen(obj):
+            parent = obj.get_parent()
+            if parent is not None and parent.get_role_name() == "menu bar":
+                # Open a visible menu bar's menu as a user's click does: GTK 3's
+                # click action on a menu bar item (Mousepad, LibreOffice) opens
+                # the bar's first menu instead. A hidden menu bar (Firefox's)
+                # keeps its action.
+                return None
         names = ("click", "press", "dodefault") if button == "left" else ("showcontextmenu", "show context menu", "menu")
         # Chromium exposes link activation as "jump", including offscreen
         # links. It is a primary action, unlike an entry's "activate" action.

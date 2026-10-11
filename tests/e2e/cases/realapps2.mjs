@@ -268,23 +268,23 @@ export default function (test) {
       await js(`${find('calc', /\b(?:table|Sheet1)\b/, { timeout: 60000 })};
         await calc.typeText("Item\\tQty\\tPrice\\tTotal\\nApples\\t3\\t0.5\\t=B2*C2\\nBread\\t2\\t1.25\\t=B3*C3\\nSum\\t\\t\\t=SUM(D2:D3)\\n");`,
       { timeout: 90000 });
-      let known = addresses();
+      const known = addresses();
       await js(`await calc.pressKey("ctrl+shift+s");`);
       await opened('saveas', main.pid, known, /Save/i);
       // The file type decides the format, not the name: choose it in the
       // file type list (a closed list shows no items), then name the file.
-      known = addresses();
       await js(`await saveas.click(${find('saveas', /^combo box\b.*\(\.ods\)/, { timeout: 10000 })});
         await saveas.click(${find('saveas', el('', 'Text CSV \\(\\.csv\\)'), { timeout: 5000, nth: -1 })});
         await saveas.setValue(${find('saveas', settable('Name'), { timeout: 10000 })}, ${JSON.stringify(file)});
         await saveas.click(${find('saveas', button('Save'), { enabled: true })});`, { timeout: 30000 });
-      // LibreOffice asks whether to keep the non-ODF format.
-      await opened('keep', main.pid, known, /./);
+      // LibreOffice asks whether to keep the non-ODF format. (The new dialog
+      // may take the closed Save dialog's address: find it by its title.)
+      await opened('keep', main.pid, new Set([key(main)]), /^(?!.*Save)/);
       await js(`await keep.click(${find('keep', button('Use Text CSV Format!?'), { timeout: 10000 })});`);
       // Depending on settings, the CSV export options follow; accept them.
       let options;
       await until(() => existsSync(file) || Boolean(options = clients().find((c) => c.pid === main.pid
-        && !known.has(key(c)) && /Export Text File|Text Export/i.test(c.title))), 'CSV written or export options', 20000);
+        && /Export Text File|Text Export/i.test(c.title))), 'CSV written or export options', 20000);
       if (!existsSync(file)) {
         await bindWindow('csvopts', options);
         await js(`await csvopts.click(${find('csvopts', button('OK'), { timeout: 10000 })});`);
@@ -300,22 +300,26 @@ export default function (test) {
       await retire();
       const title = () => clients().find((c) => c.title.startsWith('Codex E2E Form'))?.title ?? '';
       await launch('form', 'codex-e2e-firefox', (c) => c.title.startsWith('Codex E2E Form'));
-      await js(`const name = ${find('form', settable('Full name'), { timeout: 45000 })};
-        await form.setValue(name, "Ada Lovelace");
+      // setValue failures are collected so one run shows the whole form's state.
+      const text = await js(`const failed = [];
+        const attempt = async (label, run) => { try { await run(); } catch (error) { failed.push(label + ": " + error.message); } };
+        await attempt("setValue name", async () => form.setValue(${find('form', settable('Full name'), { timeout: 45000 })}, "Ada Lovelace"));
         await form.click(${find('form', settable('Email'))}); await form.typeText("ada@example.org");
         // A native select: open its dropdown, then choose from the open list.
         await form.click(${find('form', el('combo box', 'Country|Choose…'))});
         await form.click(${find('form', el('', 'Japan'), { timeout: 5000, nth: -1 })});
         await form.click(${find('form', el('radio button', 'Pro'))});
         await form.click(${find('form', el('check box', 'Subscribe to newsletter'))});
-        await form.setValue(${find('form', el('spin button|entry', 'Seats'))}, "3");
-        await form.setValue(${find('form', el('slider', 'Priority'))}, "7");
+        await attempt("setValue seats", async () => form.setValue(${find('form', el('spin button|entry', 'Seats'))}, "3"));
+        await attempt("setValue priority", async () => form.setValue(${find('form', el('slider', 'Priority'))}, "7"));
         await form.click(${find('form', settable('Delivery notes'))});
         await form.typeText("Ring the bell twice.\\nDanke ✓");
         // The date's month field, then its digits as a user types them.
         await form.click(${find('form', el('spin button', '[Mm]onth.*'))});
         await form.typeText("10112026");
-        await form.pressKey("Escape");`, { timeout: 90000 });
+        await form.pressKey("Escape");
+        await nodeRepl.write("R2FAILED" + JSON.stringify(failed));`, { timeout: 90000 });
+      const failed = JSON.parse(text.slice(text.indexOf('R2FAILED') + 8));
       // Terms are required: the browser refuses the submission first.
       await js(`await form.click(${find('form', button('Place order'))});`);
       await until(() => title().startsWith('Codex E2E Form|invalid:terms'), 'submission refused without terms', 10000);
@@ -326,8 +330,8 @@ export default function (test) {
       const data = JSON.parse(json);
       const expected = { name: 'Ada Lovelace', email: 'ada@example.org', country: 'JP', plan: 'pro', news: 'yes', terms: 'yes',
         start: '2026-10-11', seats: '3', priority: '7', notes: 'Ring the bell twice.\nDanke ✓', submits: 1 };
-      expect(JSON.stringify(data) === JSON.stringify(expected),
-        `submitted ${JSON.stringify(data)}\nexpected  ${JSON.stringify(expected)}`);
+      expect(!failed.length && JSON.stringify(data) === JSON.stringify(expected),
+        `${failed.join('\n')}\nsubmitted ${JSON.stringify(data)}\nexpected  ${JSON.stringify(expected)}`);
     });
 
   scenario(test, 'Mousepad: Preferences from the menu bar, settings saved in its config',
@@ -357,6 +361,8 @@ export default function (test) {
       await launch('letter', 'codex-e2e-gte-replace', (c) => c.class === 'org.gnome.TextEditor' && /letter/.test(c.title));
       await js(`${find('letter', /Dear team,/, { timeout: 30000 })};
         await letter.pressKey("ctrl+h");
+        // Type once the search field has taken focus, as a user waits for it.
+        ${find('letter', /^text \([^)]*focused[^)]*settable[^)]*\) Search\b/, { timeout: 5000 })};
         await letter.typeText("colour");
         await letter.setValue(${find('letter', settable('.*[Rr]eplace.*'), { timeout: 5000 })}, "color");
         await letter.click(${find('letter', button('Replace All|Replace all'), { timeout: 10000, enabled: true })});
