@@ -1,0 +1,34 @@
+<!doctype html><meta charset="utf-8"><title>Codex E2E Keys</title>
+<!-- Disposable page for input-fidelity tests. Its state is mirrored into the
+     window title as JSON, which tests read from Hyprland: the text area's
+     length, FNV-1a hash and tail, its selection, the page selection and the
+     scroller's offsets. -->
+<style>
+body{font:16px/20px monospace;margin:8px}
+textarea{width:90%;height:150px;font:inherit}
+#words{display:inline-block;margin:12px 0}
+#scroller{height:300px;width:600px;overflow:auto;border:1px solid #888}
+#scroller div{height:20px;white-space:nowrap}
+</style>
+<textarea id="area" aria-label="Keys area"></textarea><br>
+<p id="words" aria-label="Keys words">ab cd middleword ef gh</p>
+<div id="scroller" aria-label="Keys scroller" tabindex="0"></div>
+<script>
+for (let i = 0; i < 300; i++) {
+  const line = document.createElement('div');
+  line.textContent = `Row ${String(i).padStart(3, '0')} ` + 'wide content '.repeat(40);
+  scroller.appendChild(line);
+}
+const fnv = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
+const sync = () => {
+  const v = area.value;
+  document.title = 'Codex E2E Keys|' + JSON.stringify({ n: v.length, h: fnv(v), t: v.slice(-40),
+    a: [area.selectionStart, area.selectionEnd], s: String(getSelection()), y: scroller.scrollTop, x: scroller.scrollLeft,
+    ph: scroller.clientHeight });
+};
+area.addEventListener('input', sync);
+area.addEventListener('select', sync);
+document.addEventListener('selectionchange', sync);
+scroller.addEventListener('scroll', sync);
+sync();
+</script>
