@@ -163,7 +163,9 @@ done < "$work/plan"
 ldconfig
 
 # As Arch's package: no hyprpm, no rpath.
-configure "$work/Hyprland" -DNO_HYPRPM=ON -DCMAKE_SKIP_RPATH=ON
+# No precompiled headers (as upstream CI's "make nopch"): ccache can't cache
+# compiles that use them, which is all of Hyprland's.
+configure "$work/Hyprland" -DNO_HYPRPM=ON -DCMAKE_SKIP_RPATH=ON -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 cmake --build "$work/Hyprland/build" -j "$jobs"
 # Headers exactly as main has them, without the package's leftovers.
 rm -rf /usr/include/hyprland
