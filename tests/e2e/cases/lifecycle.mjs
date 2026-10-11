@@ -129,7 +129,6 @@ async function withTrees(name, globals, fn, leftovers = []) {
   try {
     return await fn();
   } catch (error) {
-    await closeLeftovers(leftovers);
     let trees = '';
     try {
       trees = await js(`const result = [];
@@ -142,6 +141,7 @@ async function withTrees(name, globals, fn, leftovers = []) {
     } catch (e) { trees = `trees unavailable: ${e.message}`; }
     const file = join(evidence, `${name}.txt`);
     writeFileSync(file, `${error.stack}\n\n${trees}\n\nclients:\n${JSON.stringify(clients(), null, 1)}`);
+    await closeLeftovers(leftovers);
     error.message += `\n(trees and clients in ${file})`;
     throw error;
   }
@@ -155,17 +155,18 @@ async function closeLeftovers(titles) {
 
 /** The focused window, workspace and pointer as they were (see seat()). Adding
  *  or removing an output makes Hyprland focus and warp to a monitor itself. */
-async function restoreSeat(saved) {
-  const [window, workspace, cursor] = JSON.parse(saved);
-  const monitor = hypr('workspaces').find((w) => w.id === workspace)?.monitor;
+async function restoreSeat(saved, log) {
+  const [window, , cursor] = JSON.parse(saved);
+  log.push(`restore to ${saved} from ${seat()}`);
   await until(() => {
     if (seat() === saved) return true;
-    if (monitor && hypr('activeworkspace').id !== workspace) dispatch(`hl.dsp.focus({ monitor = "${monitor}" })`);
-    if (window && hypr('activewindow').address !== window) dispatch(`hl.dsp.focus({ window = "address:${window}" })`);
     const now = hypr('cursorpos');
     if (now.x !== cursor.x || now.y !== cursor.y) dispatch(`hl.dsp.cursor.move({ x = ${cursor.x}, y = ${cursor.y} })`);
+    log.push(`cursor moved: ${seat()}`);
+    if (window && hypr('activewindow').address !== window) dispatch(`hl.dsp.focus({ window = "address:${window}" })`);
+    log.push(`window focused: ${seat()}`);
     return seat();
-  }, `desktop restored to ${saved}`, 5000);
+  }, `desktop restored to ${saved}`, 3000);
 }
 
 /** Width and height of a JPEG from its frame header. */
@@ -300,7 +301,7 @@ export default function (test) {
       if (direct.error) {
         expect(/outside|bounds|visible|view|scroll/i.test(direct.error), `unclear error for an out-of-view row: ${direct.error}`);
         // Then scroll the list as a user would until the row is in view, and pick it.
-        await js(`const table = await lifeOne(lifeOpen, "^(?:tree )?table");
+        await js(`const table = await lifeOne(lifeOpen, ${JSON.stringify(el('(?:tree )?table', 'Files'))});
           await lifeWait(async () => {
             const row = await lifeLast(lifeOpen, ${cell('target-beta.txt')});
             try { await lifeOpen.click(row); return true; } catch (e) {
@@ -685,15 +686,20 @@ export default function (test) {
     const home = monitorOf(one('Codex E2E Life Targets'));
     const name = 'codex-e2e-out';
     const extra = () => hypr('monitors').find((m) => m.name === name);
-    const before = seat();
+    const start = seat();
+    const log = [];
     await withTrees('monitor', ['lifeXDlg', 'lifeXOuter', 'lifeXInner'], async () => {
+      let before = start;
       try {
         hyprctl('eval', `hl.monitor({ output = "${name}", mode = "1600x900", position = "${home.x + Math.round(home.width / home.scale)}x${home.y}", scale = "1" })`);
         hyprctl('output', 'create', 'headless', name);
         await until(() => Boolean(extra()), 'headless output', 10000);
         dispatch(`hl.dsp.workspace.move({ monitor = "${name}", workspace = "name:codex" })`);
         await until(() => hypr('workspaces').find((w) => w.name === 'codex')?.monitor === name, 'codex workspace moved');
-        await restoreSeat(before);
+        // Hyprland focuses a new output (and warps the pointer there) itself;
+        // from here on the provider must change nothing.
+        before = seat();
+        log.push(`output added: ${start} -> ${before}`);
         await bind('lifeXDlg', 'codex-e2e-life-xdialogs.desktop', { timeout: 30000 });
         const main = one('Codex E2E Life XDialogs');
         expect(main.xwayland, 'not an XWayland window');
@@ -731,7 +737,8 @@ export default function (test) {
         try { hyprctl('output', 'remove', name); } catch {}
         await until(() => !extra(), 'headless output removed', 10000);
         await until(() => hypr('workspaces').find((w) => w.name === 'codex')?.monitor === home.name, 'codex workspace back');
-        await restoreSeat(before);
+        log.push(`output removed: ${seat()}`);
+        try { await restoreSeat(start, log); } finally { writeFileSync(join(evidence, 'monitor-seat.txt'), log.join('\n')); }
       }
     }, ['Codex E2E Life Inner', 'Codex E2E Life Outer']);
   }, { needs: strict ? luaOnly : 'VM only (adds an output)' });
