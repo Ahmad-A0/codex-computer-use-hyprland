@@ -151,7 +151,9 @@ def save(*_):
                  size=size, bold=bold.get_active(), airplane=airplane.get_active(), combo=combo.get_active_text(),
                  spin=spin.get_value(), spinText=spin.get_text(), volume=volume.get_value(),
                  **geometry())
-    out.write_text(json.dumps(state))
+    # Atomically, so tests never read a half-written file.
+    out.with_suffix('.tmp').write_text(json.dumps(state))
+    out.with_suffix('.tmp').replace(out)
 
 
 def count(key):

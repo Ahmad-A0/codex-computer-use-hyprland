@@ -126,7 +126,9 @@ def save(*_):
                  schedule=next((r.text() for r in radios if r.isChecked()), None), retries=retries.value(),
                  zoom=zoom.value(), tableScroll=prices.verticalScrollBar().value(),
                  tableRows=[prices.rowAt(0), prices.rowAt(prices.viewport().height() - 1)], overTrap=over_trap())
-    out.write_text(json.dumps(state))
+    # Atomically, so tests never read a half-written file.
+    out.with_suffix('.tmp').write_text(json.dumps(state))
+    out.with_suffix('.tmp').replace(out)
 
 
 def count(key):

@@ -70,10 +70,10 @@ function removed(diff) {
     return b === undefined ? [a] : Array.from({ length: b - a + 1 }, (_, i) => a + i);
   });
 }
-/** Every changed line other than these elements may differ only in focus. */
-function onlyChanged(diff, before, ids, what) {
+/** Every changed line other than these elements may differ only in focus (or, for `title`, in the window title the page mirrors its state into). */
+function onlyChanged(diff, before, ids, what, title = null) {
   for (const change of changes(diff)) {
-    if (ids.includes(change.id)) continue;
+    if (ids.includes(change.id) || (title && change.body.includes(title))) continue;
     const normal = (line) => String(line).replace(/ \(([^)]*)\)/, (_, list) => {
       const kept = list.split(', ').filter((s) => s !== 'focused');
       return kept.length ? ` (${kept.join(', ')})` : '';
@@ -110,7 +110,7 @@ async function open(variable, id) {
 }
 /** Wait until a reading stops changing (scrolling can continue after input). */
 async function settled(read, describe, quiet = 600, timeout = 8000) {
-  let last = JSON.stringify(read());
+  let last; // read() may throw until the app has written its state; until() retries
   let since = Date.now();
   await until(() => {
     const now = JSON.stringify(read());
@@ -675,7 +675,7 @@ export default function (test) {
       expect(has(r1.t, ids.terms, 'checked') && has(r1.t, ids.dark, 'checked') && has(r1.t, ids.pro, 'checked') && !has(r1.t, ids.free, 'checked'),
         `states in the tree:\n${r1.t}`);
       expect(changes(r1.d).some((c) => c.id === ids.free) && changes(r1.d).some((c) => c.id === ids.pro), `the radio change is not one diff:\n${r1.d}`);
-      onlyChanged(r1.d, r1.before, [ids.free, ids.pro], 'radio');
+      onlyChanged(r1.d, r1.before, [ids.free, ids.pro], 'radio', 'Codex E2E Widgets|');
       const r2 = await run(`const error = await wTry(async () => wweb.click(${ids.disabled})); await wweb.getAXState({ emit: false });
         await wResult({ error });`);
       expect(web().disabled === 0, `a disabled button was activated: ${r2.error}`);

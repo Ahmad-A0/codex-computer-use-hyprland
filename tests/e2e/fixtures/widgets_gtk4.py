@@ -119,7 +119,9 @@ def save(*_):
                  flavor=item.get_string() if item else None, wifi=wifi.get_active(), notify=notify.get_active(),
                  copies=copies.get_value(), brightness=brightness.get_value(), tab=notebook.get_current_page(),
                  **geometry())
-    out.write_text(json.dumps(state))
+    # Atomically, so tests never read a half-written file.
+    out.with_suffix('.tmp').write_text(json.dumps(state))
+    out.with_suffix('.tmp').replace(out)
 
 
 def count(key):
