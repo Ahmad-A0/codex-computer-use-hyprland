@@ -98,10 +98,12 @@ async function lifeBind(title, timeout = 10000) {
 const replHelpers = `${lifeIds}; ${lifeOne}; ${lifeLast}; ${lifeWait}; ${lifeBind};
   Object.assign(globalThis, { lifeIds, lifeOne, lifeLast, lifeWait, lifeBind });`;
 const esc = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-/** Pattern for an element with this role (regex source) and exactly this name. */
-const el = (role, name) => `^(?:${role})(?: \\([^)]*\\))? ${esc(name)}(?:,|$)`;
 const BUTTON = '(?:push )?button';
 const ENTRY = 'text|entry';
+/** Pattern for an element with this role (regex source) and exactly this name;
+ *  text fields must be settable (a label next to one shares role and name). */
+const el = (role, name) => (role === ENTRY ? `^(?:${role}) \\([^)]*settable[^)]*\\) ${esc(name)}(?:,|$)`
+  : `^(?:${role})(?: \\([^)]*\\))? ${esc(name)}(?:,|$)`);
 const find = (app, role, name) => `await lifeOne(${app}, ${JSON.stringify(el(role, name))})`;
 
 /** Poll an async check (a value of true ends it); the last value explains a timeout. */
