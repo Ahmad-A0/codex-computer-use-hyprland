@@ -717,11 +717,15 @@ class Backend:
         # A Chromium key event carries one UTF-16 unit, so characters beyond
         # it (emoji) typed as keys are dropped. macOS types any Unicode
         # string; paste those through a private offer (the desktop clipboard
-        # is untouched) between the typed runs.
+        # is untouched) between the typed runs. Chromium allows a page to read
+        # the clipboard only within five seconds of input reaching the
+        # browser, so the page first handles the text typed before (a long
+        # text queues up in a hidden window): a paste behind it reads nothing.
         from .clipboard import paste
         for beyond, chars in itertools.groupby(value, lambda char: ord(char) > 0xFFFF):
             part = "".join(chars)
             if beyond:
+                background.caught_up(c)
                 paste(c, part, "text")
             else:
                 background.type_text(c, part)

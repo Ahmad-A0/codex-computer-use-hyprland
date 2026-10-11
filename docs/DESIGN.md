@@ -303,7 +303,12 @@ physical key and acts on some (evdev `KEY_CLOSE` closes its window), and drops
 codes it does not know, so a batch carries at most 16 distinct characters
 beyond ASCII. A Chromium key event carries one UTF-16 unit, so characters beyond
 the Basic Multilingual Plane (emoji) are pasted into Chromium between the typed
-runs, as macOS types any Unicode string.
+runs, as macOS types any Unicode string. Chromium lets a page read the clipboard
+only within five seconds of input reaching the browser, and a window on a hidden
+workspace handles typed text only as it gets frame callbacks, so a long text can
+queue up there for longer; before each such paste the window's frame callbacks
+are serviced until it has handled the text typed before it (else the paste reads
+nothing).
 
 Wayland leaves the scale of scroll input to each toolkit, and most read axis
 values as wheel units (ten per wheel click), not as pixels. The scroll is chosen
