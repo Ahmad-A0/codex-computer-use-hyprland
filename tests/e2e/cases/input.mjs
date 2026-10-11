@@ -534,8 +534,9 @@ export default function (test) {
         try {
           for (const [x, y] of ${JSON.stringify(points.slice(1))}) await handle.move_to({ window: w, x, y });
         } finally { await handle.end(); } }`);
+      // A repeated event at the same point (X11 reports the release point twice) is one step.
       const sequence = () => padSince(read, since).filter((e) => e.kind !== 'motion' || e.held)
-        .map((e) => `${e.kind}@${e.at.map(Math.round)}`).join(' ');
+        .map((e) => `${e.kind}@${e.at.map(Math.round)}`).filter((e, i, all) => e !== all[i - 1]).join(' ');
       const expected = `press@${points[0]} motion@${points[1]} motion@${points[2]} release@${points[2]}`;
       const arrived = await until(() => sequence() === expected || sequence(), `${app}: drag_handle events before any observation`, 4000)
         .then(() => true, () => false);

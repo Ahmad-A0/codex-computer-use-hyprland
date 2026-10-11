@@ -124,16 +124,21 @@ inline std::string begin(SP<CWLSurfaceResource> target,json_object* j) {
     for(auto* d:found)sendOffer(d,transfer);
     return "{\"ok\":true,\"token\":"+std::to_string(id)+"}";
 }
-inline std::string state(json_object* j,bool finish) {
+// After a paste, the client with the keyboard focus gets the desktop selection
+// back. Any other client keeps the private offer: the compositor never sent it
+// the desktop selection (it does on focus), and an app may read its paste after
+// the read that completed the transfer (Chromium reads every new selection
+// first), which must not get the user's clipboard.
+inline void finish(const std::shared_ptr<Transfer>& t){
+    auto target=t->target.lock();auto focus=g_pSeatManager->m_state.keyboardFocus.lock();
+    if(!target || !focus || focus->client()!=target->client())return;
+    auto selection=g_pSeatManager->m_selection.currentSelection.lock();
+    for(auto* d:devices(target->client()))sendOffer(d,nullptr,selection);
+}
+inline std::string state(json_object* j,bool end) {
     collect();auto id=static_cast<uint64_t>(num(j,"token"));auto found=transfers.find(id);
     require(found!=transfers.end(),"Unknown clipboard transaction");auto t=found->second;
-    if(finish) {
-        if(auto target=t->target.lock()) {
-            auto selection=g_pSeatManager->m_selection.currentSelection.lock();
-            for(auto* d:devices(target->client()))sendOffer(d,nullptr,selection);
-        }
-        transfers.erase(found);
-    }
+    if(end) {finish(t);transfers.erase(found);}
     return "{\"ok\":true,\"received\":"+std::to_string(t->received)+",\"completed\":"+std::to_string(t->completed)+",\"failed\":"+std::to_string(t->failed)+"}";
 }
 // Sky clipboard_read: while armed, the target client's new selection is kept
@@ -198,7 +203,7 @@ inline void setup(HANDLE plugin) {
         for(auto it=transfers.begin();it!=transfers.end();) {
             auto t=it->second;
             if(now()-t->started<30000){++it;continue;}
-            if(auto target=t->target.lock())for(auto* d:devices(target->client()))sendOffer(d,nullptr,g_pSeatManager->m_selection.currentSelection.lock());
+            finish(t);
             std::erase_if(writers,[&](auto& w){return w->transfer==t;});it=transfers.erase(it);
         }
         if(Copy::client && now()-Copy::started>=30000)Copy::end();

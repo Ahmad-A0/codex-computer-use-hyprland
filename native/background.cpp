@@ -150,6 +150,9 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         auto sym=keysym(str(j,"key").c_str());
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
         typing.push_back(sym);
+        // A character key absent from the seat's layout and from US is bound
+        // like typed text ("adiaeresis" on a French layout).
+        if(auto cp=xkb_keysym_to_utf32(sym);cp>126)extras.push_back(cp);
         auto mods=field(j,"modifiers"); require(json_object_is_type(mods,json_type_array),"Expected modifiers array");
         for(size_t i=0;i<json_object_array_length(mods);++i) {
             auto* name=json_object_get_string(json_object_array_get_idx(mods,i));require(name,"Expected modifier name");
