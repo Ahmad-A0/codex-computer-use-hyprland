@@ -743,24 +743,21 @@ export default function (test) {
     }), { needs: browser ? null : 'no Chromium-based browser' });
   // TEMPORARY probe: how each toolkit moves content for one scroll event of each kind.
   test('widgets probe: scroll sources', async () => {
-    await open('wg3', G3); await open('wg4', G4); await open('wqt', QT); await openWeb();
-    await selectTab('wg3', 'List', () => state(G3).page === 0);
+    await open('wg4', G4); await open('wqt', QT); await openWeb();
     await selectTab('wqt', 'Items', () => state(QT).tab === 0);
     const apps = [
-      ['wg3', () => clients().find((c) => c.class === G3), () => state(G3).scroll, [280, state(G3).listTop + 120]],
-      ['wg4', () => clients().find((c) => c.class === G4), () => state(G4).scroll, [280, 120]],
-      ['wqt', () => clients().find((c) => c.class === QT), () => [state(QT).tableScroll, ...state(QT).tableRows], [260, 448]],
-      ['wweb', webWindow, () => web().y, null],
+      ['wg4', () => clients().find((c) => c.class === G4), () => state(G4).scroll, [280, 120],
+        [['finger 20', {}, 20], ['finger 60', {}, 60]]],
+      ['wweb', webWindow, () => web().y, null, [['finger 20', {}, 20], ['finger 60', {}, 60]]],
+      ['wqt', () => clients().find((c) => c.class === QT), () => [state(QT).tableScroll, ...state(QT).tableRows, state(QT).wheels ?? [], state(QT).popup], [260, 448],
+        [['finger', {}, 100], ['finger no leave', { leave: false }, 100], ['wheel', { source: 'wheel', value120: 120 }, 15],
+          ['wheel no leave', { source: 'wheel', value120: 120, leave: false }, 15]]],
     ];
-    const toolkit = (pid) => execFileSync('python3', ['-c', 'import gi,sys; gi.require_version("Atspi","2.0"); from gi.repository import Atspi; d=Atspi.get_desktop(0); '
-      + 'print([(a.get_toolkit_name(), a.get_toolkit_version()) for a in (d.get_child_at_index(i) for i in range(d.get_child_count())) if a and a.get_process_id()==int(sys.argv[1])])', String(pid)], { encoding: 'utf8' }).trim();
-    const variants = [['finger+stop', {}, 100], ['finger', { stop: false }, 100], ['continuous+stop', { source: 'continuous' }, 100],
-      ['continuous', { source: 'continuous', stop: false }, 100], ['wheel120', { source: 'wheel', value120: 120 }, 15]];
     const results = {};
-    for (const [name, window, read, point] of apps) {
+    for (const [name, window, read, point, variants] of apps) {
       const c = window();
       const at = point ?? [c.size[0] / 2, c.size[1] / 2];
-      results[name] = { toolkit: toolkit(c.pid), point: at };
+      results[name] = { point: at };
       for (const [label, options, amount] of variants) {
         for (const direction of [1, -1]) {
           const before = await settled(read, 'at rest');
@@ -776,7 +773,10 @@ export default function (test) {
         }
       }
     }
+    // The provider's own scroll of the Qt table.
+    await js(`await wqt.scroll(await e2eFind(wqt, "Prices"), "down", 1); await wqt.getAXState({ emit: false });`);
+    results.providerQt = await settled(() => [state(QT).tableScroll, state(QT).wheels ?? []], 'qt');
     writeFileSync(join(out, 'widgets-probe.json'), JSON.stringify(results, null, 1));
-    throw new Error(`probe:\n${JSON.stringify(results, null, 1)}`);
+    throw new Error(`probe:\n${JSON.stringify(results)}`);
   });
 }

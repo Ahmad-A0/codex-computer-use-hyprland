@@ -286,13 +286,14 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
         int count=1; uint32_t button=272; double dx=0,dy=0;
         if(op=="click") { auto b=str(j.get(),"button"); require(b=="left"||b=="right"||b=="middle","Invalid button"); button=b=="right"?273:b=="middle"?274:272; auto n=num(j.get(),"count"); require(n>=1&&n<=3&&std::floor(n)==n,"Invalid click count"); count=n; }
         // Scroll input: finger (default; exact pixels), continuous, or wheel with value120 notches; stop ends the sequence.
-        auto source=WL_POINTER_AXIS_SOURCE_FINGER; bool stop=true; int notches=0;
+        auto source=WL_POINTER_AXIS_SOURCE_FINGER; bool stop=true; int notches=0; bool leave=true;
         if(op=="scroll") {
             dx=num(j.get(),"dx");dy=num(j.get(),"dy");require(std::abs(dx)<=8388607&&std::abs(dy)<=8388607,"Scroll out of range");
             json_object *value=nullptr;
             if(json_object_object_get_ex(j.get(),"source",&value)){std::string s=json_object_get_string(value);require(s=="finger"||s=="continuous"||s=="wheel","Invalid scroll source");source=s=="wheel"?WL_POINTER_AXIS_SOURCE_WHEEL:s=="continuous"?WL_POINTER_AXIS_SOURCE_CONTINUOUS:WL_POINTER_AXIS_SOURCE_FINGER;}
             if(json_object_object_get_ex(j.get(),"stop",&value))stop=json_object_get_boolean(value);
             if(json_object_object_get_ex(j.get(),"value120",&value))notches=json_object_get_int(value);
+            if(json_object_object_get_ex(j.get(),"leave",&value))leave=json_object_get_boolean(value);
         }
         auto hit=Desktop::viewState()->hitTest();
         auto origin=window->position(Desktop::View::IGeometric::GEOMETRIC_GOAL);
@@ -344,6 +345,7 @@ std::string handle(eHyprCtlOutputFormat,std::string request) {
                 if(stop && dy) p->sendAxisStop(t,WL_POINTER_AXIS_VERTICAL_SCROLL);
                 if(stop) p->sendFrame();
             }
+            if(!leave) continue;
             if(op!="move") p->sendLeave();
             if(previous && previous->client()==seat->client()) {p->sendEnter(previous,previousLocal);p->sendFrame();}
         }
