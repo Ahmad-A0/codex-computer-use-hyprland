@@ -613,6 +613,35 @@ class Accessibility:
             return
         raise ValueError('Element does not expose an editable text or numeric value interface')
 
+    def wheel_step(self, client, x, y, horizontal=False):
+        """Pixels a GTK 3 scrolled window at a window point moves per wheel step, or None.
+
+        Outside macOS, GTK 3 scales wheel input by the page: one detent, or ten
+        Wayland axis units, scroll pow(page, 2/3) pixels, so pixels sent as axis
+        units would move about six times as far in a typical window. Other
+        toolkits take axis units as pixels."""
+        try:
+            root = self.root(client)
+            if root is None:
+                return None
+            app = root.get_application()
+            if app is None or app.get_toolkit_name() != "GTK" or not (app.get_toolkit_version() or "").startswith("3."):
+                return None
+            path = [root]
+            for _ in range(64):
+                child = path[-1].get_accessible_at_point(round(x), round(y), self.api.CoordType.WINDOW)
+                if child is None or self.identity(child) == self.identity(path[-1]):
+                    break
+                path.append(child)
+            for obj in reversed(path):
+                if obj.get_role_name() == "scroll pane":
+                    rect = obj.get_extents(self.api.CoordType.WINDOW)
+                    page = rect.width if horizontal else rect.height
+                    return page ** (2 / 3) if page > 0 else None
+        except Exception:
+            return None
+        return None
+
     def viewport(self, client, ident, horizontal=False):
         """Measure the nearest visible scroll viewport, clipped to the window."""
         obj = self.resolve(client, ident)

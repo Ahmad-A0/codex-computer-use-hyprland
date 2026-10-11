@@ -3,7 +3,7 @@
 // user working in another window of the same app while the agent acts. Every
 // result is read from the apps themselves (fixture state files, page titles).
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { clients, ensure, entry, expect, fixtures, hypr, js, out, python, rejects, seat, statePath, strict, until,
   userWindows, which, windowId } from '../lib.mjs';
@@ -26,9 +26,14 @@ if (qt) {
 }
 const browser = which('chromium', 'google-chrome-stable');
 if (browser) {
-  // The same profile as the toolkit tests' browser: a running instance opens this as another window.
-  entry('codex-e2e-keys', 'Codex E2E Keys', `${browser} --user-data-dir=${join(out, 'browser')} --no-first-run `
-    + `--no-default-browser-check --ozone-platform=wayland --app=file://${join(fixtures, 'input.html')}`);
+  // The same profile as the toolkit tests' browser: a running instance opens
+  // this as another window. A browser started here logs to chromium-keys.log.
+  const launcher = join(out, 'bin', 'codex-e2e-keys-browser');
+  writeFileSync(launcher, `#!/bin/sh\nexec ${browser} --user-data-dir=${join(out, 'browser')} --no-first-run `
+    + `--no-default-browser-check --ozone-platform=wayland --enable-logging=stderr --app=file://${join(fixtures, 'input.html')} `
+    + `2>>${join(out, 'chromium-keys.log')}\n`);
+  chmodSync(launcher, 0o755);
+  entry('codex-e2e-keys', 'Codex E2E Keys', launcher);
 }
 const wtype = which('wtype');
 const vmOnly = (extra) => (strict ? extra ?? null : 'VM only (simulates user input or changes global input settings)');
@@ -47,7 +52,11 @@ const qtState = () => JSON.parse(readFileSync(statePath('codex-e2e-qinput'), 'ut
 const userState = () => view('codex-e2e-userapp', USER);
 const agentState = () => view('codex-e2e-userapp', AGENT);
 const keysWindow = () => clients().find((c) => c.title.startsWith('Codex E2E Keys|'));
-const keysState = () => JSON.parse(keysWindow().title.slice('Codex E2E Keys|'.length));
+const keysState = () => {
+  const window = keysWindow();
+  if (!window) throw new Error('the Chromium window is gone (see chromium-keys.log)');
+  return JSON.parse(window.title.slice('Codex E2E Keys|'.length));
+};
 const fnv = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /** Where two strings first differ, for readable failures. */
@@ -118,12 +127,13 @@ async function withUserApp(run) {
     const user = byTitle(USER), agent = byTitle(AGENT);
     pid = user.pid;
     userWindows.add(user.address);
-    moveWindow(agent.address, 40, 40);
     moveWindow(user.address, 1000, 40);
     focusWindow(user.address);
     cursorTo(1300, 300);
-    await until(() => userState().active && !agentState().active && byTitle(USER).at[0] === 1000 && byTitle(AGENT).at[0] === 40
-      || [userState().active, byTitle(USER).at], 'user window focused and placed', 8000);
+    await until(() => (userState().active && !agentState().active && same(byTitle(USER).at, [1000, 40])
+      && hypr('activewindow').address === user.address)
+      || { user: userState().active, agent: agentState().active, at: byTitle(USER).at, focus: hypr('activewindow').address },
+    'user window focused and placed', 8000);
     await js(`globalThis.uw = await cua.getApp({ windowId: ${windowId(agent)} });`);
     await run({ user: byTitle(USER), agent: byTitle(AGENT), workspace: hypr('activeworkspace').id });
   } finally {
@@ -295,10 +305,11 @@ export default function (test) {
     if (browser) {
       // Tab moves focus out of a web text area, so the page gets no tabs.
       await ensureKeys();
-      const web = longText({ lines: 70, tabs: false });
-      await js(`${clearArea} await kpage.typeText(${JSON.stringify(web)}); await kpage.getAXState({ emit: false });`, { timeout: 120000 });
-      await until(() => { const s = keysState(); return (s.n === web.length && s.h === fnv(web)) || s; },
-        `Chromium text area (expected ${web.length} characters ending ${JSON.stringify(web.slice(-40))})`, 15000);
+      for (const web of [longText({ lines: 40, tabs: false, unicode: false }), longText({ lines: 70, tabs: false })]) {
+        await js(`${clearArea} await kpage.typeText(${JSON.stringify(web)}); await kpage.getAXState({ emit: false });`, { timeout: 120000 });
+        await until(() => { const s = keysState(); return (s.n === web.length && s.h === fnv(web)) || s; },
+          `Chromium text area (expected ${web.length} characters ending ${JSON.stringify(web.slice(-40))})`, 15000);
+      }
       await js(`${clearArea} await kpage.typeText("0123456789");
         for (const k of ${JSON.stringify(script.keys)}) await kpage.pressKey(k); await kpage.getAXState({ emit: false });`, { timeout: 90000 });
       await until(() => { const s = keysState(); return (s.h === fnv(script.text) && s.n === script.text.length) || s; },
@@ -406,63 +417,70 @@ export default function (test) {
     }
   });
 
-  test('input: scrolling by pixels and pages moves exactly that far, and back, in GTK, Qt and Chromium', async () => {
-    // macOS scrolls by the requested pixels; a page is the viewport's extent.
-    const results = {};
+  test('input: scrolling by pixels and pages moves exactly that far, and back, in GTK (Wayland and XWayland), Qt and Chromium', async () => {
+    // macOS scrolls by the requested pixels, and a page is the viewport's
+    // extent. Every toolkit is measured before any verdict (input-scroll.json).
+    const results = {}, failures = [];
+    const check = (ok, message) => { if (!ok) failures.push(message); };
+    const lines = Array.from({ length: 400 }, (_, i) => `Line ${String(i).padStart(3, '0')}: scrolling document text`).join('\n');
     try {
       await ensureGtk();
-      const lines = Array.from({ length: 400 }, (_, i) => `Line ${String(i).padStart(3, '0')}: scrolling document text`).join('\n');
-      await js(`await inp.setValue(await e2eFind(inp, "Input document", "text"), ${JSON.stringify(lines)});`);
-      await until(() => gtkState().document === lines, 'GTK long document');
-      const gscroll = async (direction, distance) => {
-        await js(`await inp.scroll(await e2eFind(inp, "Input document", "text"), "${direction}", ${JSON.stringify(distance)});
-          await inp.getAXState({ emit: false });`);
-        return settled(() => gtkState().v.value, 'GTK scrolling settled');
-      };
-      await gscroll('up', 40);
-      const { page, upper } = gtkState().v, line = gtkState().lineHeight;
-      expect(gtkState().v.value === 0 && upper > page * 4, `GTK document not at the top: ${JSON.stringify(gtkState().v)}`);
-      const g = results.gtk = { page, line, onePage: await gscroll('down', 1) };
-      g.threeLines = await gscroll('down', { pixels: 3 * line }) - g.onePage;
-      g.back = await gscroll('up', { pixels: page + 3 * line });
-      expect(Math.abs(g.onePage - page) <= page * 0.05, `GTK: one page moved ${g.onePage} px, the page is ${page} px`);
-      expect(Math.abs(g.threeLines - 3 * line) <= line / 2, `GTK: ${3 * line} px moved ${g.threeLines} px`);
-      expect(g.back === 0, `GTK: scrolling back the same distance ended at ${g.back}`);
-
+      await ensureX();
+      for (const [app, read, name] of [['inp', gtkState, 'GTK'], ['xinp', xState, 'XWayland GTK']]) {
+        await js(`await ${app}.setValue(await e2eFind(${app}, "Input document", "text"), ${JSON.stringify(lines)});`);
+        await until(() => read().document === lines, `${name} long document`);
+        const scroll = async (direction, distance) => {
+          await js(`await ${app}.scroll(await e2eFind(${app}, "Input document", "text"), "${direction}", ${JSON.stringify(distance)});
+            await ${app}.getAXState({ emit: false });`);
+          return settled(() => read().v.value, `${name} scrolling settled`);
+        };
+        await scroll('up', 40);
+        const { page, upper } = read().v, line = read().lineHeight;
+        expect(read().v.value === 0 && upper > page * 4, `${name} document not at the top: ${JSON.stringify(read().v)}`);
+        const r = results[name] = { page, line, onePage: await scroll('down', 1) };
+        r.threeLines = await scroll('down', { pixels: 3 * line }) - r.onePage;
+        r.back = await scroll('up', { pixels: page + 3 * line });
+        // XWayland wheel clicks come in GTK's steps (page^(2/3) px), so allow half a step there.
+        const slack = app === 'xinp' ? page ** (2 / 3) / 2 : line / 2;
+        check(Math.abs(r.onePage - page) <= Math.max(page * 0.03, slack), `${name}: one page moved ${r.onePage} px, the page is ${page} px`);
+        check(Math.abs(r.threeLines - 3 * line) <= slack, `${name}: ${3 * line} px moved ${r.threeLines} px`);
+        check(r.back === 0, `${name}: scrolling back the same distance ended at ${r.back}`);
+      }
       if (qt) {
         await ensureQt();
         // Qt's plain-text scroll bar counts lines.
-        const qscroll = async (direction, distance) => {
+        const scroll = async (direction, distance) => {
           await js(`await qinp.scroll(await e2eFind(qinp, "Qt input text", "text"), "${direction}", ${JSON.stringify(distance)});
             await qinp.getAXState({ emit: false });`);
           return settled(() => qtState().v.value, 'Qt scrolling settled');
         };
         await js(`await qinp.setValue(await e2eFind(qinp, "Qt input text", "text"), ${JSON.stringify(lines)});`);
         await until(() => qtState().document === lines, 'Qt long document');
-        await qscroll('up', 40);
-        const q = results.qt = { page: qtState().v.page, start: qtState().v.value, onePage: await qscroll('down', 1) };
-        q.back = await qscroll('up', 1);
-        expect(q.start === 0 && Math.abs(q.onePage - q.page) <= 1, `Qt: one page moved ${q.onePage} lines, the page is ${q.page} lines`);
-        expect(q.back === 0, `Qt: scrolling back one page ended at line ${q.back}`);
+        await scroll('up', 40);
+        const q = results.qt = { page: qtState().v.page, start: qtState().v.value, onePage: await scroll('down', 1) };
+        q.back = await scroll('up', 1);
+        check(q.start === 0 && Math.abs(q.onePage - q.page) <= 1, `Qt: one page moved ${q.onePage} lines, the page is ${q.page} lines`);
+        check(q.back === 0, `Qt: scrolling back one page ended at line ${q.back}`);
       }
       if (browser) {
         await ensureKeys();
-        const kscroll = async (direction, distance) => {
+        const scroll = async (direction, distance) => {
           await js(`const i = e2eIndex(await kpage.getAXState({ emit: false, disableDiffing: true }), "Keys scroller");
             await kpage.scroll(i, "${direction}", ${JSON.stringify(distance)}); await kpage.getAXState({ emit: false });`);
           return settled(() => keysState().y, 'Chromium scrolling settled');
         };
-        await kscroll('up', 40);
-        const c = results.chromium = { page: keysState().ph, start: keysState().y, onePage: await kscroll('down', 1) };
-        c.threeLines = await kscroll('down', { pixels: 60 }) - c.onePage;
-        c.back = await kscroll('up', { pixels: c.page + 60 });
-        expect(c.start === 0 && Math.abs(c.onePage - c.page) <= 2, `Chromium: one page moved ${c.onePage} px, the page is ${c.page} px`);
-        expect(Math.abs(c.threeLines - 60) <= 2, `Chromium: 60 px moved ${c.threeLines} px`);
-        expect(c.back === 0, `Chromium: scrolling back ended at ${c.back}`);
+        await scroll('up', 40);
+        const c = results.chromium = { page: keysState().ph, start: keysState().y, onePage: await scroll('down', 1) };
+        c.threeLines = await scroll('down', { pixels: 60 }) - c.onePage;
+        c.back = await scroll('up', { pixels: c.page + 60 });
+        check(c.start === 0 && Math.abs(c.onePage - c.page) <= 2, `Chromium: one page moved ${c.onePage} px, the page is ${c.page} px`);
+        check(Math.abs(c.threeLines - 60) <= 2, `Chromium: 60 px moved ${c.threeLines} px`);
+        check(c.back === 0, `Chromium: scrolling back ended at ${c.back}`);
       }
     } finally {
       writeFileSync(join(out, 'input-scroll.json'), JSON.stringify(results, null, 2));
     }
+    expect(!failures.length, `${failures.join('\n')}\nmeasured: ${JSON.stringify(results)}`);
   });
 
   test('input: drags — the slider follows the pointer exactly, drag_handle holds across steps, dragging selects exact text', async () => {
@@ -479,24 +497,6 @@ export default function (test) {
       await until(near(target), `${app}: the knob followed the drag to x=${target}`);
       await js(`await ${app}.drag([${Math.round(knob())}, ${y}], [${sx + sw - 1}, ${y}]); await ${app}.getAXState({ emit: false });`);
       await until(() => read().value === 1000 || read().value, `${app}: dragging past the end reaches the maximum`);
-      // Sky drag_handle: pressed across calls, observable in between.
-      const steps = [Math.round(sx + sw * 0.25), Math.round(sx + sw * 0.6)];
-      await js(`globalThis.handleWindow = await e2eWindow(${JSON.stringify(title)});
-        await cua.computer.drag_handle({ window: handleWindow, action: "start", x: ${Math.round(knob())}, y: ${y} });`);
-      try {
-        for (const x of steps) {
-          await js(`await cua.computer.drag_handle({ window: handleWindow, action: "move_to", x: ${x}, y: ${y} });`);
-          await until(near(x), `${app}: drag_handle move_to x=${x}`);
-        }
-        await rejects(`await ${app}.click([${Math.round(sx + 5)}, ${y}]);`, /drag handle is pressed/);
-      } finally {
-        await js('await cua.computer.drag_handle({ action: "end" });');
-      }
-      await until(near(steps[1]), `${app}: the knob stays where the handle was released`);
-      const value = read().value;
-      await js(`await ${app}.getScreenshot({ emit: false });`);
-      expect(read().value === value, `${app}: the slider moved after release`);
-
       // Selecting text by dragging over exact characters, within and across lines.
       const doc = 'alpha beta gamma delta\nsecond line of text\nthird';
       await js(`await ${app}.setValue(await e2eFind(${app}, "Input document", "text"), ${JSON.stringify(doc)});`);
@@ -508,6 +508,27 @@ export default function (test) {
         await until(() => same(read().docSelection, [from, to]) || read().docSelection,
           `${app}: drag selects ${JSON.stringify(doc.slice(from, to))} [${from}, ${to}]`);
       }
+      // Sky drag_handle: the button stays pressed across calls, the selection
+      // follows each step, other pointer actions are refused meanwhile.
+      const start = doc.indexOf('gamma'), steps = [doc.indexOf('line') + 1, doc.indexOf('of') + 1, doc.indexOf('delta') + 3];
+      await js(`await ${app}.click(${JSON.stringify(at(doc.length))}); globalThis.handleWindow = await e2eWindow(${JSON.stringify(title)});
+        await cua.computer.drag_handle({ window: handleWindow, action: "start", x: ${at(start)[0]}, y: ${at(start)[1]} });`);
+      try {
+        for (const offset of steps) {
+          await js(`await cua.computer.drag_handle({ window: handleWindow, action: "move_to", x: ${at(offset)[0]}, y: ${at(offset)[1]} });`);
+          await until(() => same(read().docSelection, [start, offset].sort((a, b) => a - b)) || read().docSelection,
+            `${app}: drag_handle at ${JSON.stringify(doc.slice(0, offset).slice(-6))}| selects from "gamma"`);
+        }
+        await rejects(`await ${app}.click(${JSON.stringify(at(0))});`, /drag handle is pressed/);
+      } finally {
+        await js('await cua.computer.drag_handle({ action: "end" });');
+      }
+      const released = [start, steps.at(-1)];
+      await js(`await ${app}.getScreenshot({ emit: false });`);
+      await until(() => same(read().docSelection, released) || read().docSelection, `${app}: the selection stays after release`);
+      // Released for real: a click now places the caret.
+      await js(`await ${app}.click(${JSON.stringify(at(1))}); await ${app}.getAXState({ emit: false });`);
+      await until(() => (same(read().docSelection, []) && read().caret === 1) || [read().docSelection, read().caret], `${app}: click after release`);
     }
   });
 

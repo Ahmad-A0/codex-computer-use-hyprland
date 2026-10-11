@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import fcntl
 import io
 import math
@@ -47,6 +48,25 @@ def duration(p):
     return value or None
 
 
+# Presses this close (logical pixels) can join into a toolkit multi-click; GTK
+# and Qt use 5, Chromium a few more.
+MULTI_CLICK_DISTANCE = 16
+
+
+@functools.cache
+def multi_click_interval():
+    """Seconds after which toolkits no longer join presses into a multi-click:
+    the desktop's double-click time (GTK, Qt and Chromium default to 400 ms),
+    with a margin for event delivery."""
+    milliseconds = 400
+    with contextlib.suppress(Exception):
+        from gi.repository import Gio
+        schema = 'org.gnome.desktop.peripherals.mouse'
+        if Gio.SettingsSchemaSource.get_default().lookup(schema, True):
+            milliseconds = max(milliseconds, Gio.Settings.new(schema).get_int('double-click'))
+    return milliseconds / 1000 + .1
+
+
 KEY_ALIASES = {"Control_L": "ctrl", "Control_R": "ctrl", "Shift_L": "shift", "Shift_R": "shift",
                "Alt_L": "alt", "Alt_R": "altgr", "Super_L": "super", "Super_R": "super"}
 MODIFIER_KEYS = {"ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L", "logo": "Super_L", "altgr": "ISO_Level3_Shift"}
@@ -85,6 +105,7 @@ class Backend:
         self.holds = {}
         self.hold_epoch = None
         self.dragging = None
+        self.last_press = None  # (address, button, x, y, time) of the last synthetic press
         self.clipboards = {}
 
     def defer_observation(self, params):
@@ -520,18 +541,39 @@ class Backend:
             with self.holding(c, names):
                 self.press_button(c, x, y, button, count, hold)
 
+    def separate_press(self, c, x, y, button):
+        """Keep a press from joining the previous one into a multi-click.
+
+        macOS posts every click with its own click count, so two click calls
+        are two single clicks. Linux toolkits count clicks themselves from the
+        time and distance between presses; wait out their interval when this
+        press would otherwise extend the previous press there.
+        """
+        last = self.last_press
+        if last and last[:2] == (c["address"], button) and math.dist(last[2:4], (x, y)) <= MULTI_CLICK_DISTANCE:
+            wait = last[4] + multi_click_interval() - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+
+    def pressed(self, c, x, y, button):
+        self.last_press = (c["address"], button, x, y, time.monotonic())
+
     def press_button(self, c, x, y, button, count, hold):
-        if hold is None or c.get("xwayland"):
-            fields = {} if hold is None else {"duration": round(hold)}
-            background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
-            return
-        # Hold the Wayland button across a real interval without blocking the compositor.
-        for _ in range(count):
-            background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
-            try:
-                time.sleep(hold / 1000)
-            finally:
-                background.send(c, "drag_cancel")
+        self.separate_press(c, x, y, button)
+        try:
+            if hold is None or c.get("xwayland"):
+                fields = {} if hold is None else {"duration": round(hold)}
+                background.send(c, "click", x=x, y=y, button=button, count=count, **fields)
+                return
+            # Hold the Wayland button across a real interval without blocking the compositor.
+            for _ in range(count):
+                background.send(c, "drag_begin", x=x, y=y, button=button, focus=True)
+                try:
+                    time.sleep(hold / 1000)
+                finally:
+                    background.send(c, "drag_cancel")
+        finally:
+            self.pressed(c, x, y, button)
 
     def scroll(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -562,8 +604,15 @@ class Backend:
         dx, dy = directions[p["direction"]]
         with self.seat(c):
             c, x, y = self.input_target(c, x, y)
+            amount = pixels
+            # GTK 3 multiplies wheel input by its own page-dependent step; send
+            # what moves the requested pixels there (one wheel click per step
+            # on XWayland, ten axis units per step on Wayland).
+            step = self.ax.wheel_step(c, x, y, dx != 0)
+            if step:
+                amount = 40 * max(1, round(pixels / step)) if c.get("xwayland") else pixels * 10 / step
             with self.holding(c, names):
-                background.send(c, "scroll", x=x, y=y, dx=dx * pixels, dy=dy * pixels)
+                background.send(c, "scroll", x=x, y=y, dx=dx * amount, dy=dy * amount)
 
     def drag(self, p):
         c = self.target(p["window"]) if "window" in p else None
@@ -592,6 +641,8 @@ class Backend:
                 self.drag_between(source, destination, x, y, end_x, end_y)
 
     def drag_between(self, source, destination, x, y, end_x, end_y):
+        self.separate_press(source, x, y, "left")
+        self.pressed(source, x, y, "left")
         if source.get("xwayland") or destination.get("xwayland"):
             if not source.get("xwayland") or not destination.get("xwayland"):
                 raise ValueError("Mixed Wayland/XWayland drag-and-drop requires the compositor data bridge")
@@ -741,6 +792,8 @@ class Backend:
             self.pointer_free()
             with self.seat(c):
                 source, sx, sy = self.input_target(None, x, y) if not c else self.input_target(c, x - c["at"][0], y - c["at"][1])
+                self.separate_press(source, sx, sy, "left")
+                self.pressed(source, sx, sy, "left")
                 if source.get("xwayland"):
                     background.send(source, "button", x=sx, y=sy, button="left", state="down")
                 else:

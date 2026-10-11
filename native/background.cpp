@@ -87,6 +87,13 @@ std::optional<Stroke> lookup(xkb_keymap* map,xkb_keysym_t sym) {
     }
     return std::nullopt;
 }
+// Key names are X keysym names, as for xdotool and the X11 helper: "Z" is the
+// shifted letter. Case-insensitive matching (which prefers lower case) is only
+// a fallback for names such as "return".
+xkb_keysym_t keysym(const char* name) {
+    auto sym=xkb_keysym_from_name(name,XKB_KEYSYM_NO_FLAGS);
+    return sym!=XKB_KEY_NoSymbol?sym:xkb_keysym_from_name(name,XKB_KEYSYM_CASE_INSENSITIVE);
+}
 std::vector<uint32_t> decode(const std::string& text) {
     std::vector<uint32_t> result;
     for(size_t i=0;i<text.size();) {
@@ -120,7 +127,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         auto keys=field(j,"keys");require(json_object_is_type(keys,json_type_array) && json_object_array_length(keys)<=16,"Expected at most 16 held keys");
         for(size_t i=0;i<json_object_array_length(keys);++i) {
             auto* name=json_object_get_string(json_object_array_get_idx(keys,i));require(name,"Expected key name");
-            auto sym=xkb_keysym_from_name(name,XKB_KEYSYM_CASE_INSENSITIVE);require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
+            auto sym=keysym(name);require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
             holding.push_back(sym);
         }
     } else if(op=="text") {
@@ -133,7 +140,7 @@ void keyboard(PHLWINDOW window,SP<CWLSeatResource> seat,json_object* j,const std
         }
         require(extras.size()<=48,"Too many distinct Unicode scalars in one batch");
     } else if(op=="key") {
-        auto sym=xkb_keysym_from_name(str(j,"key").c_str(),XKB_KEYSYM_CASE_INSENSITIVE);
+        auto sym=keysym(str(j,"key").c_str());
         require(sym!=XKB_KEY_NoSymbol,"Unknown XKB key name");
         typing.push_back(sym);
         auto mods=field(j,"modifiers"); require(json_object_is_type(mods,json_type_array),"Expected modifiers array");
