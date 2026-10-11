@@ -48,6 +48,8 @@ function find(tree, name, role) {
   });
   return line === undefined ? null : Number(line.match(/^(\d+)/)[1]);
 }
+/** The ID of the first element with this role (GTK 4 and Qt name combo boxes after their value). */
+const withRole = (tree, role) => Number(lines(tree).find((l) => l.replace(/^\d+ /, '').startsWith(`${role} `))?.match(/^(\d+)/)[1] ?? NaN);
 const lineOf = (tree, id) => lines(tree).find((l) => l.startsWith(`${id} `)) ?? null;
 const STATE = '(?:focused|selected|expanded|indeterminate|checked|unchecked|settable|disabled)';
 const stateList = new RegExp(`^\\d+ (?:[a-z][a-z ]*? )?\\((${STATE}(?:, ${STATE})*)\\)`);
@@ -296,21 +298,21 @@ export default function (test) {
       await selectTab('wg3', 'List', () => state(G3).page === 0);
       const s = await settled(() => state(G3).scroll, 'list at rest').then(() => state(G3));
       const row = `Row ${String(Math.ceil(s.scroll / s.rowHeight) + 2).padStart(3, '0')}`;
+      // GTK 3's "edit" cell action only moves the cursor (its signal name is
+      // wrong in GTK), so edit as a user does: click the cell, Return edits it.
       const result = await run(`const t = ${full('wg3')};
         const nameId = e2eIndex(t, ${JSON.stringify(row)}, "table cell");
         const rows = t.split(String.fromCharCode(10)).map((l) => l.trim());
         const at = rows.findIndex((l) => l.startsWith(nameId + " "));
         const qty = rows.slice(at + 1).find((l) => /^\\d+ table cell/.test(l));
         const qtyId = Number(qty.split(" ")[0]);
-        const action = (qty.match(/Secondary Actions: (.*)$/)?.[1] ?? "").split(", ").find((a) => /edit/i.test(a));
-        if (!action) throw new Error("no edit action: " + qty);
-        await wg3.performSecondaryAction(qtyId, action);
-        const editing = ${diff('wg3')};
-        await wg3.pressKey("ctrl+a"); await wg3.typeText("77"); await wg3.pressKey("Return");
+        await wg3.click(qtyId);
+        const selected = ${diff('wg3')};
+        await wg3.pressKey("Return"); await wg3.pressKey("ctrl+a"); await wg3.typeText("77"); await wg3.pressKey("Return");
         const after = ${diff('wg3')};
-        await wResult({ qty, qtyId, editing, after, t: ${full('wg3')} });`);
+        await wResult({ qty, qtyId, selected, after, t: ${full('wg3')} });`);
       await until(() => state(G3).qty[row] === 77, `${row} quantity edited in the model`);
-      expect(state(G3).activated !== row, 'editing activated the row');
+      expect(state(G3).selected === row && state(G3).activated !== row, `editing did not stay on ${row}: ${JSON.stringify(state(G3))}`);
       const line = lineOf(result.t, result.qtyId);
       expect(/(^|\s)77(,|$)/.test(line.replace(/^\d+ table cell( \([^)]*\))?/, '')), `the edited cell shows ${line} (was ${result.qty})`);
       expect(changes(result.after).some((c) => c.kind === '~' && c.id === result.qtyId && c.body.includes('77')),
@@ -326,7 +328,7 @@ export default function (test) {
         const d = ${diff('wg3')};
         await wResult({ t0, d, t1: ${full('wg3')} });`);
       await until(() => state(G3).page === 2, 'Controls page is current');
-      const listAction = find(r0.t0, 'List page action', 'push button');
+      const listAction = find(r0.t0, 'List page action', 'button');
       // As on macOS, only the current page's controls are in the tree.
       expect(find(r0.t1, 'List page action') === null && find(r0.t1, 'Inventory') === null && find(r0.t1, 'Catalog') === null,
         `controls of other notebook pages are listed:\n${r0.t1}`);
@@ -341,7 +343,7 @@ export default function (test) {
       const t1 = r0.t1;
       const ids = Object.fromEntries([['subscribe', 'Subscribe', 'check box'], ['small', 'Small', 'radio button'],
         ['medium', 'Medium', 'radio button'], ['large', 'Large', 'radio button'], ['bold', 'Bold', 'toggle button'],
-        ['airplane', 'Airplane mode'], ['disabled', 'Disabled action', 'push button'], ['reveal', 'Reveal', 'push button']]
+        ['airplane', 'Airplane mode'], ['disabled', 'Disabled action', 'button'], ['reveal', 'Reveal', 'button']]
         .map(([key, name, role]) => [key, find(t1, name, role)]));
       expect(Object.values(ids).every((id) => id !== null), `controls missing: ${JSON.stringify(ids)}\n${t1}`);
       expect(find(t1, 'Hidden action') === null, `a hidden button is listed:\n${t1}`);
@@ -373,7 +375,7 @@ export default function (test) {
       const r3 = await run(`const before = ${full('wg3')}; await wg3.click(${ids.reveal});
         const d = ${diff('wg3')}; await wResult({ before, d, after: ${full('wg3')} });`);
       await until(() => state(G3).revealed && !state(G3).subscribeEnabled, 'revealed in the app');
-      const shown = find(r3.after, 'Hidden action', 'push button');
+      const shown = find(r3.after, 'Hidden action', 'button');
       expect(shown !== null && changes(r3.d).some((c) => c.kind === '+' && c.id === shown), `the revealed button was not added:\n${r3.d}`);
       expect(!Object.values(ids).includes(shown), `the revealed button reuses an ID: ${shown}`);
       expect(changes(r3.d).some((c) => c.kind === '~' && c.id === ids.subscribe && statesOf(c.body).includes('disabled')),
@@ -509,10 +511,10 @@ export default function (test) {
       expect(state(G4).trap === 0, 'the Trap button was clicked');
 
       const t1 = await js(`await nodeRepl.write(${full('wg4')});`);
-      const flavor = find(t1, 'Flavor');
+      const flavor = withRole(t1, 'combo box');
       const ids = { wifi: find(t1, 'Wi-Fi'), notify: find(t1, 'Notify', 'check box'), copies: find(t1, 'Copies', 'spin button'),
-        brightness: find(t1, 'Brightness', 'slider'), sync: find(t1, 'Sync', 'progress bar'), disabled: find(t1, 'Disabled action', 'push button') };
-      expect(flavor !== null && Object.values(ids).every((id) => id !== null), `controls missing: ${JSON.stringify(ids)}\n${t1}`);
+        brightness: find(t1, 'Brightness', 'slider'), sync: find(t1, 'Sync', 'progress bar'), disabled: find(t1, 'Disabled action', 'button') };
+      expect(!Number.isNaN(flavor) && Object.values(ids).every((id) => id !== null), `controls missing: ${JSON.stringify(ids)}\n${t1}`);
       expect(lineOf(t1, flavor).includes('Vanilla'), `the drop-down does not show its value: ${lineOf(t1, flavor)}`);
       expect(find(t1, 'Hidden action') === null, `a hidden button is listed:\n${t1}`);
       expect(statesOf(lineOf(t1, ids.disabled)).includes('disabled'), `not shown disabled: ${lineOf(t1, ids.disabled)}`);
@@ -540,10 +542,10 @@ export default function (test) {
       expect(numberIn(lineOf(r.t, ids.copies)) === 7 && numberIn(lineOf(r.t, ids.brightness)) === 80,
         `values in the tree: ${lineOf(r.t, ids.copies)} / ${lineOf(r.t, ids.brightness)}`);
 
-      const general = find(r.t, 'General action', 'push button');
+      const general = find(r.t, 'General action', 'button');
       await selectTab('wg4', 'Advanced', () => state(G4).tab === 1);
       const nb = await run(`const t = ${full('wg4')}; const error = await wTry(async () => wg4.click(${general}));
-        await wg4.click(e2eIndex(t, "Advanced action", "push button")); await wg4.getAXState({ emit: false });
+        await wg4.click(e2eIndex(t, "Advanced action", "button")); await wg4.getAXState({ emit: false });
         await wResult({ t, error });`);
       await until(() => state(G4).advancedClicks === 1, 'the Advanced page button works');
       expect(find(nb.t, 'General action') === null && state(G4).generalClicks === 0,
@@ -567,19 +569,40 @@ export default function (test) {
       expect(['Engineering', 'Backend'].every((n) => state(QT).expanded.includes(n)), JSON.stringify(state(QT)));
       expect(changes(r1.d1).some((c) => c.kind === '+' && c.body.includes('Backend')), `expansion not in the diff:\n${r1.d1}`);
       expect(changes(r1.d2).some((c) => c.kind === '+' && c.body.includes('Alice')), `expansion not in the diff:\n${r1.d2}`);
-      const engineering = find(r1.t0, 'Engineering');
-      expect(has(r1.t1, engineering, 'expanded'), `Engineering not shown expanded: ${lineOf(r1.t1, engineering)}`);
+      // Qt recreates every cell object of a tree view when it changes, so tree
+      // item IDs cannot survive it; the table beside it must keep its IDs.
+      expect(has(r1.t1, find(r1.t1, 'Engineering'), 'expanded'), `Engineering not shown expanded:\n${r1.t1}`);
       expect(has(r1.t3, find(r1.t3, 'Bob'), 'selected'), `Bob not shown selected:\n${r1.t3}`);
-      expect(find(r1.t3, 'Engineering') === engineering && find(r1.t3, 'Sales') === find(r1.t0, 'Sales'), 'tree item IDs changed');
+      expect(find(r1.t3, 'Product 00') === find(r1.t0, 'Product 00') && find(r1.t3, 'Prices') === find(r1.t0, 'Prices'),
+        'IDs of the unchanged table changed');
 
-      // A table row below the viewport: brought into view or refused, never misdirected.
+      // A table row partly below the viewport lies over the Trap button.
+      const overTrap = state(QT).overTrap.find((name) => find(r1.t3, name) !== null);
+      if (overTrap !== undefined) {
+        const r = await run(`const error = await wTry(async () => wqt.click(e2eIndex(${full('wqt')}, ${JSON.stringify(overTrap)})));
+          await wqt.getAXState({ emit: false }); await wResult({ error });`);
+        if (r.error === null) await until(() => state(QT).cell[0] === Number(overTrap.slice(8)), `${overTrap} is the current cell`);
+        expect(state(QT).trap === 0, `the click on ${overTrap} (out of view) went through to the Trap button: ${JSON.stringify(r)}`);
+      }
+      // Rows below the viewport are not on screen; scroll page by page until the target is.
       const target = 'Product 30';
-      const cell = await run(`const error = await wTry(async () => wqt.click(e2eIndex(${full('wqt')}, ${JSON.stringify(target)})));
-        await wqt.getAXState({ emit: false }); await wResult({ error });`);
-      if (cell.error === null) await until(() => JSON.stringify(state(QT).cell) === '[30,0]', `${target} is the current cell`);
-      else expect(/view|visible|scroll/i.test(cell.error), `clicking ${target} failed without saying it is out of view: ${cell.error}`);
+      let listed = null;
+      for (let n = 0; n < 20 && listed === null; n++) {
+        const tree = await js(`await nodeRepl.write(${full('wqt')});`);
+        listed = find(tree, target);
+        if (listed !== null) break;
+        const [first, last] = await settled(() => state(QT).tableRows, 'table at rest');
+        await js(`await wqt.scroll(await e2eFind(wqt, "Prices"), "down", 1); await wqt.getAXState({ emit: false });`);
+        await until(() => state(QT).tableRows[0] !== first, 'the table scrolled');
+        const [after] = await settled(() => state(QT).tableRows, 'table scrolling settled');
+        expect(after > first && after <= last + 1, `a one-page scroll skipped rows: ${first}..${last} -> ${JSON.stringify(state(QT).tableRows)}`);
+      }
+      expect(listed !== null, `${target} never appeared: ${JSON.stringify(state(QT))}`);
+      await js(`await wqt.click(${listed}); await wqt.getAXState({ emit: false });`);
+      await until(() => JSON.stringify(state(QT).cell) === '[30,0]', `${target} is the current cell`);
       expect(state(QT).tab === 0 && state(QT).treeActivated === 'Engineering/Backend/Bob' && state(QT).trap === 0,
-        `the click on ${target} hit something else: ${JSON.stringify(state(QT))}`);
+        `a click in the table hit something else: ${JSON.stringify(state(QT))}`);
+
       const row = state(QT).tableRows[0] + 1;
       const product = `Product ${String(row).padStart(2, '0')}`;
       const edit = await run(`const t = ${full('wqt')};
@@ -594,9 +617,9 @@ export default function (test) {
       await selectTab('wqt', 'Settings', () => state(QT).tab === 1);
       const t2 = await js(`await nodeRepl.write(${full('wqt')});`);
       expect(find(t2, 'Departments') === null && find(t2, 'Prices') === null, `the hidden Items tab is listed:\n${t2}`);
-      const ids = { theme: find(t2, 'Theme', 'combo box'), autosave: find(t2, 'Autosave', 'check box'), daily: find(t2, 'Daily', 'radio button'),
+      const ids = { theme: withRole(t2, 'combo box'), autosave: find(t2, 'Autosave', 'check box'), daily: find(t2, 'Daily', 'radio button'),
         weekly: find(t2, 'Weekly', 'radio button'), retries: find(t2, 'Retries', 'spin button'), zoom: find(t2, 'Zoom', 'slider'),
-        indexing: find(t2, 'Indexing', 'progress bar'), disabled: find(t2, 'Disabled action', 'push button'), reveal: find(t2, 'Reveal', 'push button') };
+        indexing: find(t2, 'Indexing', 'progress bar'), disabled: find(t2, 'Disabled action', 'button'), reveal: find(t2, 'Reveal', 'button') };
       expect(Object.values(ids).every((id) => id !== null), `controls missing: ${JSON.stringify(ids)}\n${t2}`);
       expect(find(t2, 'Hidden action') === null, `a hidden button is listed:\n${t2}`);
       expect(lineOf(t2, ids.theme).includes('Light'), `the combo box does not show its value: ${lineOf(t2, ids.theme)}`);
@@ -625,7 +648,7 @@ export default function (test) {
 
       const r3 = await run(`await wqt.click(${ids.reveal}); const d = ${diff('wqt')}; await wResult({ d, t: ${full('wqt')} });`);
       await until(() => state(QT).revealed, 'revealed in the app');
-      const shown = find(r3.t, 'Hidden action', 'push button');
+      const shown = find(r3.t, 'Hidden action', 'button');
       expect(shown !== null && changes(r3.d).some((c) => c.kind === '+' && c.id === shown), `the revealed button was not added:\n${r3.d}`);
       expect(has(r3.t, ids.autosave, 'disabled'), `Autosave not shown disabled: ${lineOf(r3.t, ids.autosave)}`);
     }), { needs: hasQt ? null : 'PyQt6 not installed' });
@@ -635,9 +658,9 @@ export default function (test) {
       await openWeb();
       const t0 = await js(`await nodeRepl.write(${full('wweb')});`);
       const ids = { email: find(t0, 'Email address', 'entry'), terms: find(t0, 'Accept terms', 'check box'), free: find(t0, 'Free', 'radio button'),
-        pro: find(t0, 'Pro', 'radio button'), dark: find(t0, 'Dark mode'), disabled: find(t0, 'Disabled submit', 'push button'),
-        overview: find(t0, 'Overview action', 'push button'), details: find(t0, 'Details', 'page tab'), notes: find(t0, 'Notes'),
-        frameField: find(t0, 'Frame field', 'entry'), frameButton: find(t0, 'Frame button', 'push button') };
+        pro: find(t0, 'Pro', 'radio button'), dark: find(t0, 'Dark mode'), disabled: find(t0, 'Disabled submit', 'button'),
+        overview: find(t0, 'Overview action', 'button'), details: find(t0, 'Details', 'page tab'), notes: find(t0, 'Notes'),
+        frameField: find(t0, 'Frame field', 'entry'), frameButton: find(t0, 'Frame button', 'button') };
       expect(Object.values(ids).every((id) => id !== null), `controls missing: ${JSON.stringify(ids)}\n${t0}`);
       expect(find(t0, 'Hidden submit') === null && find(t0, 'Invisible submit') === null && find(t0, 'Details action') === null,
         `hidden controls are listed:\n${t0}`);
@@ -661,7 +684,7 @@ export default function (test) {
       // ARIA tabs: the hidden panel's controls leave and enter the tree.
       const r3 = await run(`await wweb.click(${ids.details}); const d = ${diff('wweb')}; const t = ${full('wweb')};
         const stale = await wTry(async () => wweb.click(${ids.overview}));
-        await wweb.click(e2eIndex(t, "Details action", "push button")); await wweb.getAXState({ emit: false });
+        await wweb.click(e2eIndex(t, "Details action", "button")); await wweb.getAXState({ emit: false });
         await wResult({ d, t, stale });`);
       await until(() => web().tab === 'b' && web().details === 1, 'Details tab and its button');
       expect(web().overview === 0, `a control of the hidden panel was pressed: ${r3.stale}`);
@@ -712,7 +735,7 @@ export default function (test) {
       expect(moved > 0 && moved <= viewport, `one page moved the page by ${moved} px; the window is ${viewport} px tall`);
 
       const r2 = await run(`const t = ${full('wweb')};
-        const checkbox = e2eIndex(t, "Far checkbox", "check box"); const button = e2eIndex(t, "Far button", "push button");
+        const checkbox = e2eIndex(t, "Far checkbox", "check box"); const button = e2eIndex(t, "Far button", "button");
         const errors = [await wTry(async () => wweb.click(checkbox)), await wTry(async () => wweb.click(button))];
         await wweb.getAXState({ emit: false }); await wResult({ errors, t: ${full('wweb')}, checkbox });`);
       expect(r2.errors.every((e) => e === null), `controls far below the fold could not be used: ${JSON.stringify(r2.errors)}`);

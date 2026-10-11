@@ -415,7 +415,7 @@ class Backend:
             if not c or "x" in p or "y" in p:
                 raise ValueError("An element requires one window and no coordinates")
             self.rendered(c)
-            return self.ax.point(c, text(p["element_id"], "element_id", False))
+            return self.ax.point(c, text(p["element_id"], "element_id", False), reveal=False)
         if c and "x" not in p and "y" not in p:
             return c["size"][0] / 2, c["size"][1] / 2
         origin = self.capture_origins.get(c["address"], (0, 0)) if c else (0, 0)
@@ -511,7 +511,7 @@ class Backend:
             # Pick the coordinate channel BEFORE acting if AT-SPI offers no
             # click/menu action. Do not retry a failed or refused action.
             self.rendered(c)
-            x, y = self.ax.point(c, ident)
+            x, y = self.ax.point(c, ident, render=lambda: self.rendered(c))
         else:
             x, y = self.location(p, c)
         self.point(c, x, y)

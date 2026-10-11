@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QProgressBar, QPushButton,
                              QRadioButton, QSlider, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
                              QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
 out, app_id = Path(sys.argv[1]), sys.argv[2]
 app = QApplication([sys.argv[0]])
@@ -106,6 +106,18 @@ def expanded():
     return found
 
 
+def over_trap():
+    """Products whose row centre lies over the Trap button (outside the table's viewport)."""
+    top = trap.mapTo(window, trap.rect().topLeft()).y()
+    over = []
+    for row in range(prices.rowCount()):
+        rect = prices.visualItemRect(prices.item(row, 0))
+        y = prices.viewport().mapTo(window, rect.center()).y()
+        if top < y < top + trap.height():
+            over.append(prices.item(row, 0).text())
+    return over
+
+
 def save(*_):
     current = departments.currentItem()
     state.update(tab=tabs.currentIndex(), expanded=expanded(), treeSelected=path_names(current) if current else None,
@@ -113,7 +125,7 @@ def save(*_):
                  autosave=autosave.isChecked(), autosaveEnabled=autosave.isEnabled(),
                  schedule=next((r.text() for r in radios if r.isChecked()), None), retries=retries.value(),
                  zoom=zoom.value(), tableScroll=prices.verticalScrollBar().value(),
-                 tableRows=[prices.rowAt(0), prices.rowAt(prices.viewport().height() - 1)])
+                 tableRows=[prices.rowAt(0), prices.rowAt(prices.viewport().height() - 1)], overTrap=over_trap())
     out.write_text(json.dumps(state))
 
 
@@ -163,4 +175,5 @@ reveal.clicked.connect(revealed)
 window.resize(520, 720)
 window.show()
 save()
+QTimer.singleShot(500, save)  # once laid out
 app.exec()
