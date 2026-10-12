@@ -114,7 +114,12 @@ running session keeps its old build; the new one is used after the next login.
 Registration also enables a user `codex-hyprland-prebuild.path` unit that compiles
 for the new headers as soon as pacman installs them, so that login needs no build.
 A compile failure means Hyprland changed an internal API the plugin uses, which
-needs a provider update. Upgrades drain clipboard resources and refuse to unload
+needs a provider update. The plugin builds against both released Hyprland and its
+development branch; because the branch keeps the last release's version number,
+`native/compat.hpp` tells their APIs apart by the headers main introduced
+(`__has_include`) instead of version macros. On main, hyprctl JSON gives only
+numbered workspaces an `id` and identifies every workspace by its `address`;
+`backend.workspace_key` compares workspaces by either. Upgrades drain clipboard resources and refuse to unload
 while a transaction or client offer remains active. Shared objects are replaced
 atomically, and the module still checks the compositor ABI when loading.
 
