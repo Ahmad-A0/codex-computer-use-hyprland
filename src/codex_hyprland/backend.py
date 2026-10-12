@@ -49,6 +49,18 @@ def duration(p):
     return value or None
 
 
+def workspace_key(workspace):
+    """A workspace's identity in hyprctl JSON, or None for no workspace.
+
+    Released Hyprland gives every workspace a unique "id" (0 for no special
+    workspace). Its development branch gives only numbered workspaces an "id"
+    and identifies every workspace by its "address" (src/ipc/s1/Commands.cpp,
+    Hyprland #16269), so named and special workspaces must not be told apart
+    by their missing "id"."""
+    workspace = workspace or {}
+    return workspace.get("address") or workspace.get("id") or None
+
+
 # Presses this close (logical pixels) can join into a toolkit multi-click; GTK
 # and Qt use 5, Chromium a few more.
 MULTI_CLICK_DISTANCE = 16
@@ -410,13 +422,10 @@ class Backend:
         # the source window's workspace (the agent's hidden workspace is the
         # screen it drags on). Windows of other workspaces share coordinates,
         # and a user's window there must never receive the agent's input.
-        if near is not None:
-            screens = {near.get("workspace", {}).get("id")}
-        else:
-            screens = {m["activeWorkspace"]["id"] for m in self.hypr.query("monitors")}
-            screens |= {m["specialWorkspace"]["id"] for m in self.hypr.query("monitors") if m.get("specialWorkspace", {}).get("id")}
+        screens = {workspace_key(near.get("workspace"))} if near is not None else self.shown_workspaces()
+        screens.discard(None)
         matches = [v for v in self.clients() if v.get("visible", False)
-                   and (v.get("workspace", {}).get("id") in screens or (near is None and v.get("pinned")))
+                   and (workspace_key(v.get("workspace")) in screens or (near is None and v.get("pinned")))
                    and v["at"][0] <= x < v["at"][0] + v["size"][0]
                    and v["at"][1] <= y < v["at"][1] + v["size"][1]]
         if not matches:
@@ -487,13 +496,16 @@ class Backend:
         previous.unlink(missing_ok=True)
         return [{"filepath": str(path)}]
 
-    def visible(self, c):
+    def shown_workspaces(self):
         shown = set()
         for monitor in self.hypr.query("monitors"):
-            shown.add(monitor["activeWorkspace"]["id"])
-            if monitor.get("specialWorkspace", {}).get("id"):
-                shown.add(monitor["specialWorkspace"]["id"])
-        return c.get("workspace", {}).get("id") in shown
+            shown.add(workspace_key(monitor.get("activeWorkspace")))
+            shown.add(workspace_key(monitor.get("specialWorkspace")))
+        shown.discard(None)
+        return shown
+
+    def visible(self, c):
+        return workspace_key(c.get("workspace")) in self.shown_workspaces()
 
     def rendered(self, c):
         """Let a window on a hidden workspace render first. Toolkits such as
