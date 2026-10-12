@@ -64,21 +64,32 @@ permissions:
 jobs:
   # A breakage that persists is reported again (daily, or per new upstream
   # version) while its fix waits for review; don't start a second agent then.
-  # Later rounds (started by notify below) revise that pull request instead.
+  # Later rounds (started by notify below) revise that pull request instead, as
+  # does a report while the waiting pull request no longer merges into main.
   existing:
     runs-on: ubuntu-latest
     outputs:
       pr: ${{ steps.pr.outputs.pr }}
+      stale: ${{ steps.pr.outputs.stale }}
     steps:
       - id: pr
-        run: echo "pr=$(gh pr list --head fix/issue-${{ inputs.issue }} --state open --json number --jq '.[0].number // ""')" >> "$GITHUB_OUTPUT"
+        run: |
+          pr=$(gh pr list --head fix/issue-${{ inputs.issue }} --state open --json number --jq '.[0].number // ""')
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          [ -n "$pr" ] || exit 0
+          # GitHub computes mergeability in the background after a push to either side.
+          for _ in 1 2 3 4 5 6; do
+            mergeable=$(gh pr view "$pr" --json mergeable --jq .mergeable)
+            [ "$mergeable" = UNKNOWN ] || break; sleep 10
+          done
+          echo "stale=$([ "$mergeable" = CONFLICTING ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
 
   fix:
     needs: existing
-    if: needs.existing.outputs.pr == '' || (inputs.round || '1') != '1'
+    if: needs.existing.outputs.pr == '' || (inputs.round || '1') != '1' || needs.existing.outputs.stale == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     outputs:
@@ -130,6 +141,7 @@ jobs:
             released Hyprland (`E2E_HYPRLAND=release ./test`); run both before opening the PR.
 
             This is round ${{ inputs.round || '1' }} of 3. ${{ needs.existing.outputs.pr != '' && format('Pull request #{0} already exists for this issue and the checkout is its branch, fix/issue-{1}: an earlier round''s fix that did not pass verification. Read `gh pr view {0} --comments`: the independent review and the verification results (with run links; `gh run download <id>` fetches failing runs'' artifacts). Address every concern, or explain on the pull request why a concern is mistaken (with source references; the reviewer reads those comments next round); then rerun the suite, push to the same branch (`git push --force-with-lease origin HEAD:fix/issue-{1}` if you rebased), and comment on the pull request with what you changed. Do not open a new pull request.', needs.existing.outputs.pr, inputs.issue) || '' }}
+            ${{ needs.existing.outputs.stale == 'true' && format('Main has changed since pull request #{0} was made and it no longer merges: rebase it onto origin/main first, resolving conflicts so that both main''s changes and the fix keep working, then verify it as below.', needs.existing.outputs.pr) || '' }}
 
             1. Reproduce with `./test` (boots a disposable Arch VM with the latest packages,
                installs the provider like a user, runs the suite; E2E_ONLY=<regex> selects tests,
@@ -384,7 +396,7 @@ jobs:
           BASE: ${{ inputs.base || 'main' }}
           HYPRLAND: ${{ inputs.hyprland || 'release' }}
           FAILED_RUN: ${{ inputs.failed_run }}
-          EXISTING: ${{ (inputs.round || '1') == '1' && needs.existing.outputs.pr || '' }}
+          EXISTING: ${{ (inputs.round || '1') == '1' && needs.existing.outputs.stale != 'true' && needs.existing.outputs.pr || '' }}
           PR: ${{ needs.fix.outputs.pr }}
           E2E_RELEASE: ${{ needs.e2e-release.result }}
           E2E_GIT: ${{ needs.e2e-git.result }}
