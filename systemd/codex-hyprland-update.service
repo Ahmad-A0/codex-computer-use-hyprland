@@ -1,0 +1,12 @@
+[Unit]
+Description=Update the Codex Hyprland provider to its latest release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+# uv is commonly installed per user.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+# @ROOT@ is the clone's path, substituted by scripts/update.sh --enable.
+ExecStart=@ROOT@/scripts/update.sh

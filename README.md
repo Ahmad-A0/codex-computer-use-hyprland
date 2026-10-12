@@ -52,10 +52,12 @@ codex-computer-use-hyprland register
 From a git checkout (needs `uv`, `python-gobject`, `at-spi2-core`, `python-pillow`):
 
 ```sh
-git clone https://github.com/Ahmad-A0/codex-computer-use-hyprland
-cd codex-computer-use-hyprland
-./install
+git clone https://github.com/Ahmad-A0/codex-computer-use-hyprland ~/.local/share/codex-computer-use-hyprland
+cd ~/.local/share/codex-computer-use-hyprland
+scripts/update.sh --enable   # installs the latest release, then keeps it updated hourly
 ```
+
+(`./install` on its own installs whatever is checked out, once.)
 
 `register` (or `./install`) adds a `cua_repl` entry to `~/.codex/config.toml`
 (backing up the original; other settings are untouched) and enables a small user
@@ -96,6 +98,12 @@ Set these under `[mcp_servers.cua_repl.env]` in `~/.codex/config.toml`:
   runtime at startup; if OpenAI changes something it genuinely depends on, it stops
   with a clear error naming the file, and a provider update is needed. Every new
   ChatGPT/Codex and Hyprland release is tested automatically (see below).
+- **Provider updates** arrive with the package manager for the AUR package. A
+  git install updates itself to each new release when set up with
+  `scripts/update.sh --enable` (run `scripts/update.sh` to update now); a
+  checkout that is on a branch, or has local changes, is never moved. After
+  `git pull` in a checkout installed by hand, rerun `./install`: the provider runs
+  from an installed copy, not from the sources.
 
 ## Troubleshooting
 
