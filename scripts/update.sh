@@ -14,6 +14,9 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_dir"
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 unit=codex-hyprland-update
+# One update at a time: enabling the timer can start one right away.
+exec 9>"$(git rev-parse --absolute-git-dir)/codex-hyprland-update.lock"
+flock 9
 case "${1:-}" in
   '') ;;
   --enable)
