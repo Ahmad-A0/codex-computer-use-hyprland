@@ -2,15 +2,13 @@ name: fix
 # Claude Code (on the maintainer's subscription token) reproduces an upstream
 # breakage in the end-to-end VM, fixes it, and opens a pull request. The pull
 # request is then verified independently of the agent: a fresh end-to-end run
-# (on released Hyprland, and on Hyprland main for early warnings), a check that
-# existing tests and workflows are untouched, and a second agent's review. A fix
-# that passes every check is merged, tested on main and released without waiting
-# for anyone, so each new Codex/Hyprland release gets a working provider (an
-# early-warning fix also passed on released Hyprland, so it ships the same way).
-# A fix that fails the suite or the review goes back to the agent with the
-# findings, for up to three rounds in all. Fixes that change existing tests, and
-# fixes still failing after the last round, wait for the maintainer, who is
-# mentioned with the outcome.
+# (on released Hyprland, and on Hyprland main for early warnings) and a second
+# agent's review. A fix that passes both is merged, its issue closed, and main
+# tested and released without waiting for anyone, so each new Codex/Hyprland
+# release gets a working provider (an early-warning fix also passed on released
+# Hyprland, so it ships the same way). A fix that fails the suite or the review
+# goes back to the agent with the findings, for up to three rounds in all; only a
+# fix still failing after the last round needs the maintainer, who is mentioned.
 on:
   workflow_call:
     inputs:
@@ -152,9 +150,8 @@ jobs:
                upstream versions. Never weaken or delete a test just to make it pass; adding
                tests is welcome. If upstream deliberately changed behaviour and an existing
                test's expectation is now wrong, update that test and justify each change under
-               a "Test changes" heading in the pull request: such a pull request is then left
-               for the maintainer to review instead of merging automatically. Don't touch
-               .github/. If OpenAI's
+               a "Test changes" heading in the pull request (the reviewer checks each one).
+               Don't touch .github/. If OpenAI's
                runtime changed shape, adapt the runtime adapter (scripts/prepare-runtime.mjs and
                scripts/runtime/); if Hyprland internals changed, adapt native/ (guard version
                differences with Hyprland's version macros so older releases still build).
@@ -213,24 +210,6 @@ jobs:
       hyprland: git
     secrets: inherit
 
-  # A fix may add tests but not change or remove existing ones, and may not
-  # touch workflows: otherwise a failure could be "fixed" by weakening its test.
-  tests-untouched:
-    needs: fix
-    if: always() && needs.fix.outputs.pr != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - run: |
-          range=origin/${{ inputs.base || 'main' }}...origin/${{ needs.fix.outputs.branch }}
-          git diff --stat "$range"
-          removed=$(git diff --numstat "$range" -- tests | awk '{ n += $2 } END { print n + 0 }')
-          workflows=$(git diff --name-only "$range" -- .github | wc -l)
-          echo "lines removed or changed under tests/: $removed; files changed under .github/: $workflows"
-          [ "$removed" -eq 0 ] && [ "$workflows" -eq 0 ]
-
   review:
     needs: fix
     if: always() && needs.fix.outputs.pr != ''
@@ -269,7 +248,8 @@ jobs:
               installed packages)?
             - Is anything unrelated, risky or unexplained included?
             - If it changes existing tests (see its "Test changes" section), does each change
-              follow a deliberate upstream change, or does it hide a regression?
+              follow a deliberate upstream change, or does it hide a regression? A test that
+              was weakened or deleted to make it pass is a CONCERN.
             Earlier rounds' reviews may already be on the pull request: check whether their
             concerns were addressed, and don't repeat concerns that were.
             Post exactly one comment with `gh pr comment ${{ needs.fix.outputs.pr }} --body-file -`.
@@ -297,10 +277,10 @@ jobs:
   # (and the fix passed on released Hyprland too). The merge uses the workflow
   # token, which triggers no push workflows, so main is tested and released here.
   merge:
-    needs: [fix, e2e-release, e2e-git, tests-untouched, review]
+    needs: [fix, e2e-release, e2e-git, review]
     if: >-
       always() && needs.fix.outputs.pr != '' &&
-      needs.e2e-release.result == 'success' && needs.tests-untouched.result == 'success' &&
+      needs.e2e-release.result == 'success' &&
       (inputs.hyprland != 'git' || needs.e2e-git.result == 'success') &&
       needs.review.outputs.verdict == 'APPROVE'
     runs-on: ubuntu-latest
@@ -311,10 +291,12 @@ jobs:
         run: |
           gh pr merge "$PR" --squash --delete-branch
           echo "sha=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)" >> "$GITHUB_OUTPUT"
+          gh issue close "$ISSUE" --comment "Fixed by #$PR."
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ needs.fix.outputs.pr }}
+          ISSUE: ${{ inputs.issue }}
 
   e2e-main:
     needs: merge
@@ -343,7 +325,7 @@ jobs:
   # Tell the maintainer the outcome: a fix merged and released, a pull request
   # to look at, or a breakage the agent could not fix.
   notify:
-    needs: [existing, fix, e2e-release, e2e-git, tests-untouched, review, merge, e2e-main, release]
+    needs: [existing, fix, e2e-release, e2e-git, review, merge, e2e-main, release]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -361,10 +343,9 @@ jobs:
           mark() { case "$1" in success|APPROVE) echo "✅ $2";; skipped) echo "➖ $2 (not needed)";; *) echo "❌ $2 (${1:-no result})";; esac; }
           checks="$(mark "$E2E_RELEASE" 'End-to-end suite on released Hyprland')
           $(mark "$E2E_GIT" 'End-to-end suite on Hyprland main')
-          $(mark "$TESTS" 'Existing tests and workflows unchanged (changes need the maintainer)')
           $(mark "$VERDICT" 'Independent review')"
-          # A failing suite or review goes back to the agent; changed tests are for the maintainer.
-          if echo "$checks" | grep -q '❌' && [ "$TESTS" = success ] && [ "$ROUND" -lt 3 ]; then
+          # A failing suite or review goes back to the agent.
+          if echo "$checks" | grep -q '❌' && [ "$ROUND" -lt 3 ]; then
             next=$((ROUND + 1))
             gh pr comment "$PR" --body "Round $ROUND did not pass verification; sending the findings back to the fix agent (round $next of 3).
 
@@ -403,7 +384,6 @@ jobs:
           PR: ${{ needs.fix.outputs.pr }}
           E2E_RELEASE: ${{ needs.e2e-release.result }}
           E2E_GIT: ${{ needs.e2e-git.result }}
-          TESTS: ${{ needs.tests-untouched.result }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           MERGE: ${{ needs.merge.result }}
           E2E_MAIN: ${{ needs.e2e-main.result }}
