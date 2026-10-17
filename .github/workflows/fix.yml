@@ -3,8 +3,8 @@ name: fix
 # breakage in the end-to-end VM, fixes it, and opens a pull request. The pull
 # request is then verified independently of the agent: a fresh end-to-end run
 # (on released Hyprland, and on Hyprland main for early warnings) and a second
-# agent's review. A fix that passes both is merged, its issue closed, and main
-# tested and released without waiting for anyone, so each new Codex/Hyprland
+# agent's review. A fix that passes both is merged, its issue closed, and
+# released without waiting for anyone, so each new Codex/Hyprland
 # release gets a working provider (an early-warning fix also passed on released
 # Hyprland, so it ships the same way). A fix that fails the suite or the review
 # goes back to the agent with the findings, for up to three rounds in all; only a
@@ -62,33 +62,22 @@ permissions:
   actions: write
 jobs:
   # A breakage that persists is reported again (daily, or per new upstream
-  # version) while its fix waits for review; don't start a second agent then.
-  # Later rounds (started by notify below) revise that pull request instead, as
-  # does a report while the waiting pull request no longer merges into main.
+  # version) while its fix is being verified or has run out of rounds; don't
+  # start a second agent then. Later rounds (started by notify) revise that PR.
   existing:
     runs-on: ubuntu-latest
     outputs:
       pr: ${{ steps.pr.outputs.pr }}
-      stale: ${{ steps.pr.outputs.stale }}
     steps:
       - id: pr
-        run: |
-          pr=$(gh pr list --head fix/issue-${{ inputs.issue }} --state open --json number --jq '.[0].number // ""')
-          echo "pr=$pr" >> "$GITHUB_OUTPUT"
-          [ -n "$pr" ] || exit 0
-          # GitHub computes mergeability in the background after a push to either side.
-          for _ in 1 2 3 4 5 6; do
-            mergeable=$(gh pr view "$pr" --json mergeable --jq .mergeable)
-            [ "$mergeable" = UNKNOWN ] || break; sleep 10
-          done
-          echo "stale=$([ "$mergeable" = CONFLICTING ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        run: echo "pr=$(gh pr list --head fix/issue-${{ inputs.issue }} --state open --json number --jq '.[0].number // ""')" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
 
   fix:
     needs: existing
-    if: needs.existing.outputs.pr == '' || (inputs.round || '1') != '1' || needs.existing.outputs.stale == 'true'
+    if: needs.existing.outputs.pr == '' || (inputs.round || '1') != '1'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     outputs:
@@ -140,7 +129,6 @@ jobs:
             released Hyprland (`E2E_HYPRLAND=release ./test`); run both before opening the PR.
 
             This is round ${{ inputs.round || '1' }} of 3. ${{ needs.existing.outputs.pr != '' && format('Pull request #{0} already exists for this issue and the checkout is its branch, fix/issue-{1}: an earlier round''s fix that did not pass verification. Read `gh pr view {0} --comments`: the independent review and the verification results (with run links; `gh run download <id>` fetches failing runs'' artifacts). Address every concern, or explain on the pull request why a concern is mistaken (with source references; the reviewer reads those comments next round); then rerun the suite, push to the same branch (`git push --force-with-lease origin HEAD:fix/issue-{1}` if you rebased), and comment on the pull request with what you changed. Do not open a new pull request.', needs.existing.outputs.pr, inputs.issue) || '' }}
-            ${{ needs.existing.outputs.stale == 'true' && format('Main has changed since pull request #{0} was made and it no longer merges: rebase it onto origin/main first, resolving conflicts so that both main''s changes and the fix keep working, then verify it as below.', needs.existing.outputs.pr) || '' }}
 
             1. Reproduce with `./test` (boots a disposable Arch VM with the latest packages,
                installs the provider like a user, runs the suite; E2E_ONLY=<regex> selects tests,
@@ -275,7 +263,7 @@ jobs:
   # A fix that passed every check ships at once: users are already on the
   # released version that broke, or soon will be on Hyprland main's next release
   # (and the fix passed on released Hyprland too). The merge uses the workflow
-  # token, which triggers no push workflows, so main is tested and released here.
+  # token, which triggers no push workflows, so it is released here.
   merge:
     needs: [fix, e2e-release, e2e-git, review]
     if: >-
@@ -298,34 +286,22 @@ jobs:
           PR: ${{ needs.fix.outputs.pr }}
           ISSUE: ${{ inputs.issue }}
 
-  e2e-main:
-    needs: merge
+  release:
+    needs: [merge, e2e-release]
     if: always() && needs.merge.outputs.sha != ''
     permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/e2e.yml
-    with:
-      ref: ${{ needs.merge.outputs.sha }}
-      hyprland: release
-    secrets: inherit
-
-  release:
-    needs: [merge, e2e-main]
-    if: always() && needs.e2e-main.result == 'success'
-    permissions:
       contents: write
-    uses: ./.github/workflows/auto-release.yml
+    uses: ./.github/workflows/release.yml
     with:
       sha: ${{ needs.merge.outputs.sha }}
       run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      versions: ${{ needs.e2e-main.outputs.versions }}
+      versions: ${{ needs.e2e-release.outputs.versions }}
     secrets: inherit
 
-  # Tell the maintainer the outcome: a fix merged and released, a pull request
-  # to look at, or a breakage the agent could not fix.
+  # Send a failed round back to the agent, or report the outcome: merged and
+  # released, or (mentioning the maintainer) a breakage the agent could not fix.
   notify:
-    needs: [existing, fix, e2e-release, e2e-git, review, merge, e2e-main, release]
+    needs: [existing, fix, e2e-release, e2e-git, review, merge, release]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -333,7 +309,7 @@ jobs:
           owner=@${{ github.repository_owner }}
           run="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           if [ -n "$EXISTING" ]; then
-            gh issue comment "$ISSUE" --body "Still failing; the proposed fix in #$EXISTING is awaiting merge, so no new fix was attempted. Run: $run"
+            gh issue comment "$ISSUE" --body "Still failing; a fix is already in #$EXISTING, so no new one was attempted. Run: $run"
             exit 0
           fi
           if [ -z "$PR" ]; then
@@ -356,16 +332,12 @@ jobs:
             exit 0
           fi
           if echo "$checks" | grep -q '❌'; then
-            headline="$owner this fix needs attention before merging (round $ROUND of 3):"
+            headline="$owner this fix did not pass verification after $ROUND rounds:"
             gh issue comment "$ISSUE" --body "$owner the fix in #$PR did not pass verification. Run: $run"
-          elif [ "$MERGE" = success ] && [ "$E2E_MAIN" = success ] && [ "$RELEASE" = success ]; then
+          elif [ "$RELEASE" = success ]; then
             headline="Verified, merged and released automatically (${TAG:-no release needed}):"
-          elif [ "$MERGE" = success ]; then
-            headline="$owner verified and merged, but testing or releasing main failed (end-to-end: $E2E_MAIN, release: $RELEASE):"
-          elif [ "$MERGE" = failure ]; then
-            headline="$owner verified, but merging failed; merge by hand (merging publishes a release):"
           else
-            headline="$owner verified and ready to merge (merging publishes a release):"
+            headline="$owner verified, but merging or releasing failed (merge: $MERGE, release: $RELEASE):"
           fi
           gh pr comment "$PR" --body "$headline
 
@@ -380,12 +352,11 @@ jobs:
           BASE: ${{ inputs.base || 'main' }}
           HYPRLAND: ${{ inputs.hyprland || 'release' }}
           FAILED_RUN: ${{ inputs.failed_run }}
-          EXISTING: ${{ (inputs.round || '1') == '1' && needs.existing.outputs.stale != 'true' && needs.existing.outputs.pr || '' }}
+          EXISTING: ${{ (inputs.round || '1') == '1' && needs.existing.outputs.pr || '' }}
           PR: ${{ needs.fix.outputs.pr }}
           E2E_RELEASE: ${{ needs.e2e-release.result }}
           E2E_GIT: ${{ needs.e2e-git.result }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           MERGE: ${{ needs.merge.result }}
-          E2E_MAIN: ${{ needs.e2e-main.result }}
           RELEASE: ${{ needs.release.result }}
           TAG: ${{ needs.release.outputs.tag }}

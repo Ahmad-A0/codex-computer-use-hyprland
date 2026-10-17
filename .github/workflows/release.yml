@@ -1,32 +1,74 @@
 name: release
-# Packages a published release (from auto-release.yml, or one published by
-# hand): attaches a source tarball and an AUR PKGBUILD built and checked in an
-# Arch container. Pushing to the AUR is off until the AUR_PUBLISH variable is
-# "true" and the AUR_SSH_PRIVATE_KEY secret exists.
+# When the end-to-end suite passes on a push to main and something users
+# install changed since the last release, publish the next patch release with a
+# source tarball and an AUR PKGBUILD built and checked in an Arch container.
+# fix.yml calls this after merging a verified fix, since its merge (with the
+# workflow token) triggers no push workflows. Pushing to the AUR is off until
+# the AUR_PUBLISH variable is "true" and the AUR_SSH_PRIVATE_KEY secret exists.
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: [e2e]
+    types: [completed]
+    branches: [main]
   workflow_call:
     inputs:
-      tag:
+      sha:
+        description: Commit on main that passed the end-to-end suite
         type: string
         required: true
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag to package
+      run:
+        description: URL of the passing end-to-end run
+        type: string
         required: true
+      versions:
+        description: Upstream versions the run tested (JSON), for the release notes
+        type: string
+        required: false
+    outputs:
+      tag:
+        description: The published tag, or empty when nothing users install changed
+        value: ${{ jobs.publish.outputs.tag }}
+concurrency:
+  group: release
+  cancel-in-progress: false
 permissions:
   contents: write
 jobs:
+  publish:
+    if: inputs.sha != '' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: publish
+        run: |
+          # Only the newest tested main is released; a later push gets its own run.
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$head" != "$SHA" ]; then echo "main has moved on to $head; skipping $SHA"; exit 0; fi
+          tag=$(scripts/release/publish.sh "$SHA" "$RUN")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          [ -z "$tag" ] || echo "Published $tag"
+        env:
+          SHA: ${{ inputs.sha || github.event.workflow_run.head_sha }}
+          RUN: ${{ inputs.run || github.event.workflow_run.html_url }}
+          VERSIONS: ${{ inputs.versions }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
   package:
+    needs: publish
+    if: needs.publish.outputs.tag != ''
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
       - run: pacman -Syu --noconfirm --needed base-devel git github-cli namcap
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.event.release.tag_name }}
+          ref: ${{ needs.publish.outputs.tag }}
       - name: Source tarball, PKGBUILD and .SRCINFO
         run: |
           git config --global --add safe.directory "$PWD"
@@ -44,7 +86,7 @@ jobs:
           cp .SRCINFO SRCINFO
           gh release upload "$TAG" "$name-$version.tar.gz" PKGBUILD SRCINFO --clobber
         env:
-          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          TAG: ${{ needs.publish.outputs.tag }}
           SERVER: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -57,7 +99,7 @@ jobs:
             *.install
 
   aur:
-    needs: package
+    needs: [publish, package]
     if: vars.AUR_PUBLISH == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -78,4 +120,4 @@ jobs:
           PKG: ${{ vars.AUR_PACKAGE || 'codex-computer-use-hyprland' }}
           NAME: ${{ vars.AUR_COMMIT_NAME || 'github-actions' }}
           EMAIL: ${{ vars.AUR_COMMIT_EMAIL || 'github-actions@users.noreply.github.com' }}
-          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          TAG: ${{ needs.publish.outputs.tag }}

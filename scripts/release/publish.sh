@@ -29,9 +29,5 @@ notes=$(mktemp)
   echo
   echo "End-to-end run: $run"
 } > "$notes"
-# Older drafts (from the manual-approval era) are superseded.
-for draft in $(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName'); do
-  gh release delete "$draft" --yes >&2
-done
 gh release create "$version" --target "$commit" --title "$version" --notes-file "$notes" --latest >&2
 echo "$version"

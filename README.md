@@ -143,8 +143,8 @@ Then remove the package (or the checkout) and `~/.cache/codex-computer-use-hyprl
   tested as soon as they appear (a poller, `scripts/release/poller/`, triggers the
   check; a daily schedule is the fallback). A failure opens an issue and a Claude Code
   agent proposes a fix as a pull request, which is then verified independently: a fresh
-  VM run and a second agent's review. A fix that passes both is merged, its issue closed,
-  and main tested and released automatically. One that fails the suite or the review goes
+  VM run and a second agent's review. A fix that passes both is merged, its issue closed
+  and released automatically. One that fails the suite or the review goes
   back to the agent with the findings, for up to three rounds; only one that still fails
   then waits for the maintainer. Any merged change that passes on main is released.
 - A daily job also runs the suite against each new commit of Hyprland's `main`, as an

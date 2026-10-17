@@ -3,7 +3,6 @@ name: e2e
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
     inputs:
       only:
@@ -16,9 +15,6 @@ on:
         default: release
   workflow_call:
     inputs:
-      only:
-        type: string
-        required: false
       ref:
         description: Commit or branch to test (default is the triggering commit)
         type: string
