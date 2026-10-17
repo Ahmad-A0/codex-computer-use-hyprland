@@ -702,6 +702,7 @@ export default function (test) {
         const before = seat();
         for (const [name, title] of [['lifeTargets', 'Codex E2E Life Targets'], ['lifeXTargets', 'Codex E2E Life XTargets']]) {
           await checkTargets(name, title, `scaled-${name}`);
+          if (client(stateId(name)).xwayland) await keepUserCursorOutside(name, title, hypr('monitors').find((m) => m.name === monitor.name));
           await checkTooltip(name, title, `scaled-tooltip-${name}`);
         }
         expect(seat() === before, `desktop changed at scale 1.5: ${before} -> ${seat()}`);
@@ -803,6 +804,31 @@ async function checkTargets(app, title, label) {
     expect(Math.abs(box[2] - box[0] + 1 - press.width) <= 3 && Math.abs(box[3] - box[1] + 1 - press.height) <= 3,
       `${title}: ${target} is ${box[2] - box[0] + 1}x${box[3] - box[1] + 1} in the screenshot, ${press.width}x${press.height} in the app`);
   }
+}
+
+/** GTK 3 on X11 shows and places a tooltip by the X core pointer, the user's
+ *  cursor, which the provider's private pointer does not move (by design): it
+ *  hides a tooltip that opens under that cursor, and re-shows one while the
+ *  cursor rests on its widget. Since Hyprland configures X11 windows at their
+ *  real position (no longer at 0,0), the VM's resting cursor lies inside the
+ *  window, where the tooltip opens. Keep the user's cursor outside the window,
+ *  as a user working elsewhere would, and start the agent's pointer inside it. */
+async function keepUserCursorOutside(app, title, monitor) {
+  const c = one(title);
+  const [px, py] = life(stateId(app)).core_pointer.map((v, i) => v + c.at[i]);
+  const [width, height] = [monitor.width / monitor.scale, monitor.height / monitor.scale];
+  const spot = [[20, 20], [width - c.size[0] - 20, 20], [20, height - c.size[1] - 20], [width - c.size[0] - 20, height - c.size[1] - 20]]
+    .map(([x, y]) => [Math.round(monitor.x + x), Math.round(monitor.y + y)])
+    .find(([x, y]) => px < x - 40 || px > x + c.size[0] + 40 || py < y - 40 || py > y + c.size[1] + 40);
+  expect(spot, `${title}: no place on the monitor keeps the user's cursor (${px},${py}) outside the window`);
+  if (spot[0] !== c.at[0] || spot[1] !== c.at[1]) {
+    dispatch(`hl.dsp.window.move({ x = ${spot[0]}, y = ${spot[1]}, window = "${address(c)}" })`);
+    await until(() => one(title).at[0] === spot[0] && one(title).at[1] === spot[1], `${title} moved to ${spot}`);
+  }
+  // A pointer entering the window ends on a motion the toplevel receives, and
+  // GTK then looks for the tooltip widget under the core pointer: none.
+  await js(`await cua.computer.move({ window: (await cua.listWindows({ emit: false }))
+    .find((w) => w.title === ${JSON.stringify(title)}), x: 3, y: 3 });`);
 }
 
 /** Hover the orange button and expect its tooltip (a solid yellow 150x50
