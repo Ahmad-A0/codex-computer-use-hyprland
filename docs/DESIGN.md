@@ -376,7 +376,10 @@ and identical-window binding paths are implemented. Platform-specific limits rem
   (GTK 3 gets as many as come closest to the requested pixels).
   Unicode typing requires an accessible focused editable control. X11 clients that
   read the core pointer (GTK 3 places tooltips by it) see the user's cursor, not
-  the private XInput2 pointer, which never moves the core one.
+  the private XInput2 pointer, which never moves the core one. GTK 3 also shows
+  a tooltip for the widget under that cursor and hides one that opens beneath
+  it, so an agent-hovered XWayland tooltip appears reliably only while the
+  user's cursor is outside the window.
 - Toolkit support still matters: inaccessible controls and applications that
   reject text/value changes or do not acknowledge focus notifications return
   explicit errors. No tree is guessed when identity cannot be verified.

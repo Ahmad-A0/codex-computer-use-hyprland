@@ -340,6 +340,16 @@ def targets():
         return True
     hover.connect('query-tooltip', query)
     grid.attach(hover, 0, 3, 1, 1)
+
+    # GTK 3 shows and places a tooltip by the core pointer (on X11 the user's
+    # cursor, not the provider's private pointer): report it relative to the window.
+    def core_pointer(*_):
+        _, x, y, _ = window.get_window().get_device_position(window.get_display().get_default_seat().get_pointer())
+        if state.get('core_pointer') != [x, y]:
+            state['core_pointer'] = [x, y]
+            save()
+        return False
+    window.connect('configure-event', core_pointer)
     for row, (label, constrain) in enumerate((('Inline popover', Gtk.PopoverConstraint.WINDOW),
                                               ('Detached popover', Gtk.PopoverConstraint.NONE))):
         opener = Gtk.MenuButton(label=label)
