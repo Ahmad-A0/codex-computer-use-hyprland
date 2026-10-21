@@ -86,7 +86,13 @@ export function bind_linux_app(computer, bound) {
     setValue: (elementIndex, value) => computer.set_value({ window: bound, element_id: String(elementIndex), value }),
     paste: (value, options) => computer.paste({ window: bound, text: value, format: options?.format ?? "text" }),
     pressKey: (key) => computer.press_key({ window: bound, key }),
-    typeText: (value) => computer.type_text({ window: bound, text: value }),
+    // As upstream: an element index focuses that field first.
+    typeText: (value, elementIndex) => computer.type_text(elementIndex === undefined
+      ? { window: bound, text: value }
+      : { window: bound, text: value, element_id: String(elementIndex) }),
+    async typeCharacters(value) {
+      return { charactersSent: await computer.type_characters({ window: bound, text: value }) };
+    },
     performSecondaryAction(elementIndex, action) {
       const element_id = String(elementIndex);
       return computer.perform_secondary_action({ window: bound, element_id, action });
