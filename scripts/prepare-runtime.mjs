@@ -92,9 +92,10 @@ function appMethods(source,file) {
   const methods=new Set(),seen=new Set();
   (function visit(name) {
     if(seen.has(name)) return;seen.add(name);
-    const found=declaredMembers(source,file,new RegExp(`\\binterface\\s+${name}\\b(?:\\s+extends\\s+([\\w$.,\\s]+?))?\\s*\\{`));
+    // Interfaces may be generic (`Target<Screenshot = ...>`) and extend generic bases.
+    const found=declaredMembers(source,file,new RegExp(`\\binterface\\s+${name}\\b(?:\\s*<[^{]*?>)?(?:\\s+extends\\s+([^{]+?))?\\s*\\{`));
     for(const member of found.members) methods.add(member.name);
-    for(const base of found.extends) if(new RegExp(`\\binterface\\s+${base}\\b`).test(source)) visit(base);
+    for(const base of found.extends.map(type=>type.replace(/<.*$/s,'').trim())) if(new RegExp(`\\binterface\\s+${base}\\b`).test(source)) visit(base);
   })('App');
   return [...methods];
 }

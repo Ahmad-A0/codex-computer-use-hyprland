@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 import tempfile
 import time
+import unicodedata
 
 from .accessibility import Accessibility, LAUNCH_ENVIRONMENT, NoBounds, TextNotRetained
 from . import background, session, desktop, guards
@@ -726,6 +727,26 @@ class Backend:
                 self.ax.insert_focused_text(c, value)
             else:
                 self.type_keys(c, value)
+
+    def type_characters(self, p):
+        """Send printable characters as key events to the window's focus.
+
+        Unlike type_text this never pastes, finds a text field or inserts
+        through AT-SPI: it only sends keys, and returns how many it sent.
+        """
+        c = self.target(p["window"]) if "window" in p else None
+        if not c:
+            raise ValueError("type_characters requires a window")
+        value = text(p.get("text"), "text")
+        if any(unicodedata.category(char)[0] == "C" for char in value):
+            raise ValueError("type_characters sends printable characters only; use press_key for Return, Tab and other keys")
+        if c.get("xwayland") and any(ord(char) > 127 for char in value):
+            raise ValueError("XWayland windows accept only ASCII characters as keys; use typeText")
+        if value:
+            with self.seat(c):
+                self.trust.guard_password_field(c, False)
+                background.type_text(c, value)
+        return len(value)
 
     def type_keys(self, c, value):
         """Type text as key events into a Wayland window's keyboard focus."""

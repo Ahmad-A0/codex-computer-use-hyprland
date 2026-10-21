@@ -4,7 +4,7 @@
 // and node_repl's computer-use interceptor auto-answers session/always grants.
 // Usage telemetry from the macOS module is deliberately not reproduced.
 const approvalGated = ["get_window_state", "get_screenshot", "click", "drag", "drag_handle", "move",
-  "move_relative", "scroll", "press_key", "key_down", "key_up", "type_text", "perform_secondary_action",
+  "move_relative", "scroll", "press_key", "key_down", "key_up", "type_text", "type_characters", "perform_secondary_action",
   "activate_window", "select_text", "set_value", "paste", "resolve_app", "launch_app",
   "clipboard_read", "clipboard_write"];
 // Approval prompts use the macOS tool name where Linux names differ.

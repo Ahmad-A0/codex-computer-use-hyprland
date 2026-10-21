@@ -12,6 +12,11 @@ import { positive_pixels } from "../core/positive_pixels.js";
 import { one_screenshot } from "./one_screenshot.js";
 import { axState } from "./hyprland_ax_diff.js";
 
+function durationMs(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("durationMs must be a non-negative safe integer.");
+  return value;
+}
+
 export function bind_linux_app(computer, bound) {
   // Every observation refreshes the bound window (title, geometry, ...).
   async function observe(include_screenshot) {
@@ -57,6 +62,9 @@ export function bind_linux_app(computer, bound) {
       }
       if (options?.mouseButton !== undefined) input.mouse_button = options.mouseButton;
       if (options?.clickCount !== undefined) input.click_count = options.clickCount;
+      // As on macOS, a held key chord and press duration work on elements too.
+      if (options?.key !== undefined) input.key = options.key;
+      if (options?.durationMs !== undefined) input.duration = durationMs(options.durationMs);
       return computer.click(input);
     },
     drag: (from, to) => computer.drag({ window: bound, path: [{ x: from[0], y: from[1] }, { x: to[0], y: to[1] }] }),
@@ -85,8 +93,19 @@ export function bind_linux_app(computer, bound) {
     }),
     setValue: (elementIndex, value) => computer.set_value({ window: bound, element_id: String(elementIndex), value }),
     paste: (value, options) => computer.paste({ window: bound, text: value, format: options?.format ?? "text" }),
-    pressKey: (key) => computer.press_key({ window: bound, key }),
-    typeText: (value) => computer.type_text({ window: bound, text: value }),
+    pressKey(key, options) {
+      const input = { window: bound, key };
+      if (options?.durationMs !== undefined) input.duration = durationMs(options.durationMs);
+      return computer.press_key(input);
+    },
+    typeText(value, elementIndex) {
+      const input = { window: bound, text: value };
+      if (elementIndex !== undefined) input.element_id = String(elementIndex);
+      return computer.type_text(input);
+    },
+    async typeCharacters(value) {
+      return { charactersSent: await computer.type_characters({ window: bound, text: value }) };
+    },
     performSecondaryAction(elementIndex, action) {
       const element_id = String(elementIndex);
       return computer.perform_secondary_action({ window: bound, element_id, action });

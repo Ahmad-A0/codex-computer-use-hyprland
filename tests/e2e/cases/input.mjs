@@ -279,6 +279,27 @@ export default function (test) {
     }
   }, { needs: vmOnly() });
 
+  test('input: typeCharacters sends printable keys to the current focus; typeText targets an element index', async () => {
+    // App.typeCharacters (Linux) returns the number of keys sent and never
+    // pastes or moves focus; typeText(text, elementIndex) focuses that field.
+    await ensureGtk();
+    await js(`const e = await e2eFind(inp, "Input entry", "text"), d = await e2eFind(inp, "Input document", "text");
+      await inp.setValue(e, "keep"); await inp.setValue(d, ""); await inp.click(e);
+      await inp.typeText("into the document", d); await inp.getAXState({ emit: false });`);
+    await until(() => difference(gtkState().document, 'into the document'), 'GTK typeText with an element index');
+    expect(gtkState().text === 'keep', `the entry changed: ${JSON.stringify(gtkState().text)}`);
+    const out = await js(`const r = await inp.typeCharacters(" + Grüße 1/2"); await inp.getAXState({ emit: false });
+      await nodeRepl.write(JSON.stringify(r));`);
+    expect(out.trim().endsWith('{"charactersSent":12}'), `typeCharacters returned ${out.slice(-200)}`);
+    await until(() => difference(gtkState().document, 'into the document + Grüße 1/2'), 'GTK typeCharacters');
+    await rejects('await inp.typeCharacters("a\\nb");', /printable|press_key/);
+    await until(() => difference(gtkState().document, 'into the document + Grüße 1/2'), 'rejected characters typed nothing');
+    await ensureX();
+    await js(`const i = await e2eFind(xinp, "Input entry", "text"); await xinp.setValue(i, ""); await xinp.click(i);
+      await xinp.typeCharacters("x11 chars!"); await xinp.getAXState({ emit: false });`);
+    await until(() => difference(xState().text, 'x11 chars!'), 'XWayland typeCharacters');
+  });
+
   test('input: long text and rapid key sequences arrive complete and in order in GTK, XWayland, Qt and Chromium', async () => {
     // Thousands of characters cross key-batch, keymap and Unicode-batch
     // boundaries; 60 separate key presses must apply in order.
