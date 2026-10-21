@@ -727,6 +727,22 @@ class Backend:
             else:
                 self.type_keys(c, value)
 
+    def type_characters(self, p):
+        """Send printable keys to the window's current focus, without locating
+        a field or pasting; return the number of characters sent."""
+        c = self.target(p.get("window"))
+        value = text(p.get("text"), "text")
+        if not value.isprintable():
+            raise ValueError("type_characters sends printable characters; use press_key for Return, Tab and shortcuts")
+        if c.get("xwayland") and any(ord(char) > 126 for char in value):
+            raise ValueError("type_characters sends only keyboard-layout characters to XWayland windows; use type_text")
+        if not value:
+            return 0
+        with self.seat(c):
+            self.trust.guard_password_field(c, False)
+            background.type_text(c, value)
+        return len(value)
+
     def type_keys(self, c, value):
         """Type text as key events into a Wayland window's keyboard focus."""
         if not any(ord(char) > 0xFFFF for char in value) or self.ax.toolkit(c)[0] != "chromium":

@@ -11,6 +11,7 @@ PARAMETERS = {
     "click": {"window", "element_id", "x", "y", "mouse_button", "click_count", "key", "duration"},
     "scroll": {"window", "element_id", "x", "y", "direction", "pixels", "pages", "key"},
     "drag": {"window", "path", "key"}, "type_text": {"window", "element_id", "text"},
+    "type_characters": {"window", "text"},
     "press_key": {"window", "key", "duration"},
     "key_down": {"window", "key"}, "key_up": {"window", "key"},
     "clipboard_read": {"window"}, "clipboard_write": {"window", "handle"}, "clipboard_release": {"handle"},
@@ -25,7 +26,7 @@ PARAMETERS = {
 # start_audio_recording/stop_audio_recording (SKY_ENABLE_AUDIO=1 only) are not implemented.
 MAX_LINE = 2 * 1024 * 1024
 INPUT_COMMANDS = {
-    'click', 'scroll', 'drag', 'type_text', 'press_key', 'select_text',
+    'click', 'scroll', 'drag', 'type_text', 'type_characters', 'press_key', 'select_text',
     'set_value', 'paste', 'perform_secondary_action', 'activate_window',
     'move', 'move_relative', 'key_down', 'key_up', 'clipboard_read', 'clipboard_write', 'drag_handle',
 }

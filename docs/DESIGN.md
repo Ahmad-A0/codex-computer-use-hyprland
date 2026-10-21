@@ -157,7 +157,7 @@ await app.getAXStateAndScreenshot();
 | Screenshot / combined observation | Exact toplevel plus isolated owned-popup capture, also for windows on hidden workspaces; coordinates follow the latest app screenshot |
 | Element click / secondary action | Exposed AT-SPI action for one left/right click; any button and click count at the element's centre otherwise, as on macOS. A coordinate click goes to the centre of the element's part inside the window and its scrolling ancestors; an element not wholly shown is first scrolled into view like macOS `AXScrollToVisible` (AT-SPI `ScrollTo`, or a GTK 4 list item's scroll-to action), and one still not on screen (a list row scrolled away, which would otherwise be clicked through to the control drawn there) is refused. An element without extents yet (Firefox page content changed since its last paint) gets a moment while the window renders. Items of an open popup menu, and the menus of a visible menu bar, are clicked at their centre, as a user's click opens or closes them (GTK 3's action on a menu bar item opens the bar's first menu) |
 | Coordinate click, move, scroll | Direct Wayland client events; XInput2 private master devices for XWayland. As on macOS, separate clicks stay single: toolkits count clicks from the time and distance between presses, so a press near the previous one waits out the desktop's double-click time |
-| `typeText`, `pressKey` | Targeted keyboard events; XWayland Unicode uses the focused AT-SPI editable control. macOS key names work: `cmd`/`command` is Ctrl and `option` is Alt; `super` stays Super |
+| `typeText`, `typeCharacters`, `pressKey` | Targeted keyboard events; `typeText(text, elementIndex)` first focuses that editable element. XWayland Unicode uses the focused AT-SPI editable control; `typeCharacters` sends printable keys only (no field lookup or paste) and refuses non-ASCII on XWayland. macOS key names work: `cmd`/`command` is Ctrl and `option` is Alt; `super` stays Super |
 | `selectText` | Text match, prefix/suffix disambiguation, selection or before/after caret placement; verified result |
 | `setValue` | Editable text replacement or finite, range-checked numeric value, under the app's keyboard focus; verified result, allowing for apps that apply it late (rendering a hidden Chromium window meanwhile; Firefox applies values in its content process). A number sets a spin button's value, not its text, which GTK would apply only on activation. A field whose app ignores the replacement (Firefox web pages) is focused, its text selected and the value typed; so is rich text without a replaceable value (a web contenteditable) |
 | `paste` | Text/HTML/Markdown on Wayland and XWayland; Markdown rendered to HTML |
@@ -166,7 +166,7 @@ await app.getAXStateAndScreenshot();
 
 The full Sky Linux client surface is also served: `key_down`/`key_up`, the `key`
 chord on `click`, `scroll`, `drag`, `move` and `move_relative`, `click.duration`
-and `press_key.duration` (0–10000 ms), `type_text.element_id`, `drag_handle`,
+and `press_key.duration` (0–10000 ms), `type_text.element_id`, `type_characters`, `drag_handle`,
 and `clipboard_read`/`clipboard_write`/`clipboard_release`.
 
 Held chords belong to their target window (or, without a window, to the window

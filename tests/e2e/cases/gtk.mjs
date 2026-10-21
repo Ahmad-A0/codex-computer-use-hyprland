@@ -44,6 +44,20 @@ export default function (test) {
     await until(() => state('codex-e2e-gtk').text === 'typed é', 'typed text');
   });
 
+  test('GTK: typeText into an element index, then typeCharacters at focus', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
+    const text = await js(`const i = await e2eFind(gtk, "E2E entry", "text"); await gtk.setValue(i, "");
+      await gtk.typeText("indexed é", i);
+      const sent = await gtk.typeCharacters(" + chars");
+      let rejected = false; try { await gtk.typeCharacters("\\n"); } catch { rejected = true; }
+      await gtk.getAXState({ emit: false });
+      await nodeRepl.write(JSON.stringify({ sent, rejected }));`);
+    const result = JSON.parse(text.slice(text.lastIndexOf('{"sent"')));
+    expect(result.sent?.charactersSent === 8, text);
+    expect(result.rejected, 'typeCharacters accepted a newline');
+    await until(() => state('codex-e2e-gtk').text === 'indexed é + chars', 'typed text');
+  });
+
   test('GTK: numeric setValue', async () => {
     await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     await js(`await gtk.setValue(await e2eFind(gtk, "E2E slider"), "37");`);
