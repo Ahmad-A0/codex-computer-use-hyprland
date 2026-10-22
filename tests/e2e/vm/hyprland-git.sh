@@ -48,7 +48,11 @@ checkout() {  # DIR REPO REV
 }
 rm -rf "$work"; mkdir -p "$work"
 checkout "$work/Hyprland" Hyprland "$commit"
-retry git -C "$work/Hyprland" submodule -q update --init --depth 1 subprojects/hyprland-protocols subprojects/udis86
+# Only the submodules the build needs, of those this revision still has: newer
+# revisions take hyprland-protocols from the system package via pkg-config.
+submodules=$(git -C "$work/Hyprland" config -f .gitmodules --get-regexp '^submodule\..*\.path$' |
+  awk '$2 == "subprojects/hyprland-protocols" || $2 == "subprojects/udis86" { print $2 }')
+[ -z "$submodules" ] || retry git -C "$work/Hyprland" submodule -q update --init --depth 1 $submodules
 
 # Which hyprwm libraries to build, in build order, as "name revision" lines:
 # those whose installed version is below what Hyprland (or another library
