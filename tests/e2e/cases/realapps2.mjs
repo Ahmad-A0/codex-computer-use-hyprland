@@ -7,7 +7,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bind, clients, entry, existingWindows, expect, fixtures, js, launchedClasses, out, strict, until, which,
+import { bind, clients, entry, existingWindows, expect, fixtures, hypr, js, launchedClasses, out, sleep, strict, until, which,
   windowId } from '../lib.mjs';
 
 // Throwaway settings, state, caches and documents; never the user's.
@@ -65,7 +65,7 @@ writeFileSync(join(firefoxProfile, 'user.js'), Object.entries({
   'startup.homepage_welcome_url.additional': '', 'browser.startup.firstrunSkipsHomepage': true,
   'trailhead.firstrun.didSeeAboutWelcome': true, 'app.normandy.enabled': false, 'browser.translations.enable': false,
   'browser.sessionstore.resume_from_crash': false, 'browser.tabs.warnOnClose': false,
-  'browser.newtab.preload': false, 'intl.locale.requested': 'en-US', 'intl.regional_prefs.use_os_locales': false, 'intl.accept_languages': 'en-US, en',
+  'browser.newtab.preload': false, 'devtools.selfxss.count': 5, 'intl.locale.requested': 'en-US', 'intl.regional_prefs.use_os_locales': false, 'intl.accept_languages': 'en-US, en',
 }).map(([key, value]) => `user_pref(${JSON.stringify(key)}, ${JSON.stringify(value)});\n`).join(''));
 
 entry('codex-e2e-nautilus', 'Codex E2E Files', `${isolated} nautilus --new-window ${join(base, 'files')}`,
@@ -76,6 +76,11 @@ entry('codex-e2e-calc-x11', 'Codex E2E Calc', `${isolated} SAL_USE_VCLPLUGIN=gtk
   'StartupWMClass=libreoffice-calc\n');
 entry('codex-e2e-firefox', 'Codex E2E Firefox', `${isolated} MOZ_ENABLE_WAYLAND=1 firefox --no-remote --new-instance `
   + `--profile ${firefoxProfile} file://${join(fixtures, 'form.html')}`);
+const pastePage = `file://${join(fixtures, 'paste.html')}`;
+// Firefox's clipboard log is kept with the results: it shows each paste's reads.
+entry('codex-e2e-firefox-paste', 'Codex E2E Firefox Paste', `${isolated} MOZ_ENABLE_WAYLAND=1 `
+  + `MOZ_LOG=WidgetClipboard:5,Widget:5 MOZ_LOG_FILE=${join(out, 'firefox-paste.log')} firefox --no-remote --new-instance `
+  + `--profile ${firefoxProfile} ${pastePage}`);
 entry('codex-e2e-mousepad-prefs', 'Codex E2E Mousepad Preferences', `${isolated} mousepad --disable-server`,
   'StartupWMClass=org.xfce.mousepad\n');
 entry('codex-e2e-gte-replace', 'Codex E2E Text Editor Replace',
@@ -378,6 +383,94 @@ export default function (test) {
         await form.setValue(${find('form', settable('Email'))}, "ada@example.org");
         await form.click(${find('form', button('Place order'))});`, { timeout: 90000 });
       await until(() => title().includes('"country":"JP"'), 'Japan submitted', 10000);
+    });
+
+  // Pastes as agents make them in Firefox-based browsers: into a page, into a
+  // new tab's address bar right after ctrl+t, and into the web console. Each
+  // result is read from the page itself (its title).
+  const pasteTitle = () => clients().find((c) => c.title.startsWith('Codex E2E Paste'))?.title ?? '';
+  scenario(test, 'Firefox: paste into a page\'s editable box',
+    blocked('firefox'), async () => {
+      await retire();
+      await launch('paster', 'codex-e2e-firefox-paste', (c) => c.title.startsWith('Codex E2E Paste'));
+      for (const n of [1, 2, 3]) {
+        await js(`await paster.click(${find('paster', /^(?:entry|text|section)\b.*Paste box/, { timeout: 45000 })});
+          await paster.pressKey("ctrl+a");
+          await paster.paste(${JSON.stringify(`Pasted ${n} ✓`)}, { format: "text" });`, { timeout: 60000 });
+        await until(() => pasteTitle().includes(`|Pasted ${n} ✓`), `paste ${n} in the page`, 10000);
+      }
+    });
+
+  scenario(test, 'Firefox: paste a URL into a new tab\'s address bar right after ctrl+t',
+    blocked('firefox'), async () => {
+      await retire();
+      await launch('paster', 'codex-e2e-firefox-paste', (c) => c.title.startsWith('Codex E2E Paste'));
+      await js(`${find('paster', /Paste box/, { timeout: 45000 })};`);
+      for (const n of [1, 2, 3]) {
+        await js(`await paster.pressKey("ctrl+t");
+          await paster.paste(${JSON.stringify(`${pastePage}?tab-${n}`)}, { format: "text" });
+          await paster.pressKey("Return");`, { timeout: 60000 });
+        await until(() => pasteTitle().startsWith(`Codex E2E Paste|tab-${n}|`), `tab ${n} opened from the pasted URL`, 15000);
+      }
+    });
+
+  scenario(test, 'Firefox: paste a command into the web console',
+    blocked('firefox'), async () => {
+      await retire();
+      await launch('paster', 'codex-e2e-firefox-paste', (c) => c.title.startsWith('Codex E2E Paste'));
+      await js(`${find('paster', /Paste box/, { timeout: 45000 })};
+        await paster.pressKey("ctrl+shift+k");`, { timeout: 60000 });
+      await sleep(3000); // the console opens and focuses its input
+      for (const n of [1, 2]) {
+        await js(`await paster.paste(${JSON.stringify(`document.getElementById("box").innerText = "console ${n}"; document.getElementById("box").dispatchEvent(new Event("input"))`)}, { format: "text" });
+          await paster.pressKey("Return");`, { timeout: 60000 });
+        await until(() => pasteTitle().includes(`|console ${n}`), `console command ${n} ran`, 15000);
+      }
+    });
+
+  // Both failures seen in Zen were in the window the user was using, so here
+  // Firefox has the user's focus, and the user has just copied in it (Firefox
+  // owns the desktop clipboard), then copied elsewhere.
+  scenario(test, 'Firefox: paste into the window the user is using, after the user copied',
+    blocked('firefox') ?? (strict ? null : 'VM only (focuses the window, uses the clipboard)'), async () => {
+      await retire();
+      const dispatch = (lua) => execFileSync('hyprctl', ['dispatch', lua], { encoding: 'utf8' });
+      const before = [hypr('activewindow').address, hypr('activeworkspace').id, hypr('cursorpos')];
+      const sentinel = execFileSync('wl-paste', ['--no-newline'], { encoding: 'utf8' });
+      const ff = await launch('paster', 'codex-e2e-firefox-paste', (c) => c.title.startsWith('Codex E2E Paste'));
+      try {
+        await js(`${find('paster', /Paste box/, { timeout: 45000 })};`, { timeout: 60000 });
+        dispatch(`hl.dsp.window.move({ workspace = "${before[1]}", follow = false, window = "address:${ff.address}" })`);
+        dispatch(`hl.dsp.focus({ window = "address:${ff.address}" })`);
+        await until(() => hypr('activewindow').address === ff.address, 'Firefox focused', 5000);
+        const wtype = (...args) => execFileSync('wtype', args, { stdio: 'ignore' });
+        // The user copies the page's address in Firefox: Firefox owns the clipboard.
+        wtype('-M', 'ctrl', 'l', '-m', 'ctrl'); await sleep(300);
+        wtype('-M', 'ctrl', 'c', '-m', 'ctrl'); await sleep(300);
+        wtype('-k', 'Escape'); wtype('-k', 'Escape'); await sleep(300);
+        await until(() => execFileSync('wl-paste', ['--no-newline'], { encoding: 'utf8' }).includes('paste.html'),
+          'the user\'s copy in Firefox', 5000);
+        for (const n of [1, 2]) {
+          await js(`await paster.click(${find('paster', /^(?:entry|text|section)\b.*Paste box/)});
+            await paster.pressKey("ctrl+a");
+            await paster.paste(${JSON.stringify(`Agent ${n} ✓`)}, { format: "text" });`, { timeout: 60000 });
+          await until(() => pasteTitle().includes(`|Agent ${n} ✓`), `agent paste ${n} while Firefox owns the clipboard`, 10000);
+        }
+        // The user copies in another app: the clipboard is no longer Firefox's.
+        execFileSync('sh', ['-c', 'printf %s codex-e2e-user-copy | wl-copy'], { stdio: 'ignore' });
+        await sleep(500);
+        await js(`await paster.click(${find('paster', /^(?:entry|text|section)\b.*Paste box/)});
+          await paster.pressKey("ctrl+a");
+          await paster.paste("Agent 3 ✓", { format: "text" });`, { timeout: 60000 });
+        await until(() => pasteTitle().includes('|Agent 3 ✓'), 'agent paste while another app owns the clipboard', 10000);
+        const now = execFileSync('wl-paste', ['--no-newline'], { encoding: 'utf8' });
+        expect(now === 'codex-e2e-user-copy', `the user's clipboard changed to ${JSON.stringify(now.slice(0, 80))}`);
+      } finally {
+        execFileSync('sh', ['-c', `printf %s ${JSON.stringify(sentinel)} | wl-copy`], { stdio: 'ignore' });
+        await retire();
+        if (before[0] && hypr('activewindow').address !== before[0]) dispatch(`hl.dsp.focus({ window = "address:${before[0]}" })`);
+        dispatch(`hl.dsp.cursor.move({ x = ${before[2].x}, y = ${before[2].y} })`);
+      }
     });
 
   scenario(test, 'Mousepad: Preferences from the menu bar, settings saved in its config',

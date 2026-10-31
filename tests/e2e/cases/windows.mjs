@@ -1,5 +1,6 @@
 // Windows an app opens itself, and windows that look identical.
-import { clients, ensure, entry, expect, gtkFixture, hypr, js, out, rejects, state, stateOf, until } from '../lib.mjs';
+import { client, clients, ensure, entry, expect, gtkFixture, hypr, js, launchDirect, out, rejects, state, statePath, stateOf, until }
+  from '../lib.mjs';
 import { join } from 'node:path';
 
 entry('codex-e2e-twin', 'Codex E2E Twin',
@@ -31,6 +32,36 @@ export default function (test) {
 
   test('dialog: a closed window gives a clear error, not a misdirected action', async () => {
     await rejects(`await dlg.click(dialogOk);`, /unavailable|getAXState|refresh/i);
+  });
+
+  // macOS delivers input to a window that another window covers. Hyprland
+  // marks a window below a fullscreen one as refusing focus; the agent's
+  // input goes to the app directly and must still arrive.
+  test('covered: input reaches a window below a fullscreen window on its workspace', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
+    const target = client('codex-e2e-gtk');
+    launchDirect(`/usr/bin/env GDK_BACKEND=wayland python3 ${gtkFixture} ${statePath('codex-e2e-cover')} codex-e2e-cover "Codex E2E Cover"`,
+      { rules: 'fullscreen on' });
+    const cover = () => clients().find((c) => c.title === 'Codex E2E Cover');
+    try {
+      await until(() => cover()?.fullscreen > 0 && cover().workspace.name === target.workspace.name,
+        'a fullscreen window over the target', 20000);
+      // The precondition the test is about (hyprctl reports it on releases).
+      await until(() => client('codex-e2e-gtk').acceptsInput !== true, 'the target blocked by the fullscreen window');
+      const clicks = state('codex-e2e-gtk').clicks;
+      await js(`const i = await e2eFind(gtk, "E2E entry", "text");
+        await gtk.setValue(i, ""); await gtk.click(i);
+        await gtk.typeText("covered"); await gtk.paste(" ✓", { format: "text" });
+        await gtk.click(await e2eFind(gtk, "E2E button", "button"));
+        const shot = await gtk.getScreenshot({ emit: false });
+        if (!(shot && shot.length > 1000)) throw new Error("no screenshot of the covered window");`);
+      await until(() => state('codex-e2e-gtk').text === 'covered ✓', 'typing and paste reached the covered window');
+      await until(() => state('codex-e2e-gtk').clicks === clicks + 1, 'the click reached the covered window');
+      expect(cover()?.fullscreen > 0, 'the cover left fullscreen');
+    } finally {
+      if (cover()) process.kill(cover().pid, 'SIGTERM');
+      await until(() => !cover(), 'cover closed', 10000);
+    }
   });
 
   test('twins: identical windows are each driven exactly', async () => {

@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>Codex E2E Paste</title>
+<!-- Disposable paste target for a real browser. What reached the editable box,
+     and the page's query string, are mirrored into the window title, which the
+     test reads from Hyprland, so the result comes from the browser itself. -->
+<style>body{font:16px sans-serif;margin:16px 24px}#box{border:1px solid #888;min-height:3em;padding:4px}</style>
+<p>Paste box</p>
+<div id="box" contenteditable="true" role="textbox" aria-label="Paste box"></div>
+<script>
+const box = document.getElementById('box');
+const show = () => { document.title = `Codex E2E Paste|${location.search.slice(1)}|${box.innerText.trim()}`; };
+box.addEventListener('input', show);
+show();
+</script>

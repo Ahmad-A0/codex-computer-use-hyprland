@@ -68,8 +68,8 @@ export const stateOf = (pid) => JSON.parse(readFileSync(join(out, `twin-${pid}.j
 export const client = (id) => clients().find((c) => c.class === id || c.initialClass === id);
 
 /** Start an app outside the provider, as the user would have it running. */
-export function launchDirect(command, { silent = true } = {}) {
-  const rules = silent ? '[workspace name:codex silent; no_initial_focus on] ' : '';
+export function launchDirect(command, { silent = true, rules: extra = '' } = {}) {
+  const rules = silent ? `[workspace name:codex silent; no_initial_focus on${extra ? `; ${extra}` : ''}] ` : '';
   execFileSync('hyprctl', ['dispatch', `hl.dsp.exec_cmd(${JSON.stringify(rules + command)})`]);
 }
 
