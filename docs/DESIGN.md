@@ -487,13 +487,10 @@ Codex sends for `workspace-write` and `danger-full-access`, checks that `node_re
 sandboxed (or did not sandbox) its processes, that the agent's input reached a
 disposable app, and that the model's code cannot reach the desktop's sockets.
 `.github/workflows/watch-upstream.yml` reruns it when OpenAI's package or Arch's
-Hyprland changes. `.github/workflows/hyprland-main.yml` runs it daily against each new
-commit of Hyprland's `main` (`E2E_HYPRLAND=git`): `tests/e2e/vm/hyprland-git.sh` builds that
-commit in the guest and installs it over Arch's package, together with any hyprwm library
-it needs newer than Arch ships (at the revisions in Hyprland's `flake.lock`), so the
-provider compiles its plugin against those headers exactly as against a release. The last
-passing commit is kept in `upstream.json` (`hyprland-main`); failures open a
-`hyprland-main` issue and start the fix agent (`fix.yml`).
+Hyprland changes; a failure opens an issue and starts the fix agent (`fix.yml`), which
+tests with `./test` as it works. Its branch is merged and released when a fresh run of the
+suite passes. `E2E_HYPRLAND=git ./test` builds Hyprland's `main` in the guest
+(`tests/e2e/vm/hyprland-git.sh`) for checking unreleased changes by hand.
 
 ## References
 
