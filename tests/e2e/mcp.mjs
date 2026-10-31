@@ -6,8 +6,9 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
 export class Provider {
-  constructor({ node, launcher, env, timeout = 60000 }) {
+  constructor({ node, launcher, env, timeout = 60000, meta = {} }) {
     this.timeout = timeout;
+    this.meta = meta; // further request _meta, such as Codex's sandbox state
     this.serial = 0;
     this.pending = new Map();
     this.elicitations = [];
@@ -75,13 +76,15 @@ export class Provider {
   /** Run code in the cua_repl `js` tool; returns its text output, throwing on errors. */
   async js(code, { timeout = 60000 } = {}) {
     const result = await this.rpc('tools/call', {
-      _meta: { 'x-codex-turn-metadata': { session_id: this.session, turn_id: randomUUID(), call_id: `call_${this.serial + 1}` } },
+      _meta: { ...this.meta, 'x-codex-turn-metadata': { ...this.meta['x-codex-turn-metadata'],
+        session_id: this.session, turn_id: randomUUID(), call_id: `call_${this.serial + 1}` } },
       name: 'js',
       arguments: { code, timeout_ms: timeout },
     }, timeout + 30000);
     const text = (result.content ?? []).filter((item) => item.type === 'text').map((item) => item.text).join('\n');
     if (result.isError || /(?:^|\n)(?:Error|RuntimeError|TypeError|ReferenceError|SyntaxError):/.test(text)) {
-      throw new Error(text.slice(-3000));
+      // Errors come first, then what the call displayed (such as getApp's state).
+      throw new Error(text.length > 3000 ? `${text.slice(0, 1500)}\n…\n${text.slice(-1500)}` : text);
     }
     return text;
   }

@@ -18,11 +18,12 @@ import realApps2 from './cases/realapps2.mjs';
 import lifecycle from './cases/lifecycle.mjs';
 import isolation, { setup as isolationSetup, finish as isolationFinish } from './cases/isolation.mjs';
 import input from './cases/input.mjs';
+import sandbox from './cases/sandbox.mjs';
 
 const only = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY, 'i') : null;
 const tests = [];
 const test = (name, run, options = {}) => tests.push({ name, run, ...options });
-for (const register of [basics, isolationSetup, gtk, windows, lowlevel, isolation, toolkits, widgets, realApps, realApps2, lifecycle, input, isolationFinish]) register(test);
+for (const register of [basics, isolationSetup, gtk, windows, lowlevel, isolation, toolkits, widgets, realApps, realApps2, lifecycle, input, sandbox, isolationFinish]) register(test);
 
 const results = [];
 let failed = 0;

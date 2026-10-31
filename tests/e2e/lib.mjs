@@ -103,13 +103,14 @@ async function e2eWindow(title, app) {
   return windows[0];
 }
 
-const runtime = resolveRuntime();
-export const provider = new Provider({
+export const runtime = resolveRuntime();
+export const providerOptions = {
   node: join(runtime, 'bin/node'),
   launcher: join(root, 'scripts/launch.mjs'),
   env: { ...process.env, CODEX_CUA_RUNTIME: runtime, CUA_REPL_ENABLED_SURFACES: 'computer', XDG_DATA_HOME: out,
     PATH: `${join(out, 'bin')}:${process.env.PATH}` },
-});
+};
+export const provider = new Provider(providerOptions);
 export const js = (code, options) => provider.js(code, options);
 export const helpers = `${e2eIndex}; ${e2eFind}; ${e2eWindow};
   globalThis.e2eIndex = e2eIndex; globalThis.e2eFind = e2eFind; globalThis.e2eWindow = e2eWindow;`;
