@@ -273,7 +273,11 @@ std::string handle(std::string request) {
         if(op=="refresh"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::refresh(window);}
         if(op=="popup_capture"){require(!g_pSessionLockManager->isSessionLocked(),"Session locked");return Capture::popups(window,j.get());}
         if(op=="popup_list")return Capture::list(window);
-        require(window->acceptsInput(),"Target refuses input");
+        // Not acceptsInput(): Hyprland also blocks focus to windows that are
+        // merely covered (below a fullscreen window, an inactive group or
+        // monocle member). Input here goes to the client directly, and macOS
+        // delivers it to covered windows too; only a hidden window refuses it.
+        require(!window->isHidden(),"Target is hidden");
         require(!g_pSessionLockManager->isSessionLocked(),"Session locked");
         require(!g_pInputManager->hasHeldButtons(),"Physical mouse button held");
         require(!(PROTO::data && PROTO::data->dndActive()),"Drag-and-drop active");
