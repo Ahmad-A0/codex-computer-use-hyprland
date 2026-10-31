@@ -1,7 +1,9 @@
 """The Sky Linux line protocol, NOT an alternative MCP or CUA API."""
 import argparse
 import json
+import os
 import sys
+import time
 
 from .backend import Backend
 
@@ -32,6 +34,15 @@ INPUT_COMMANDS = {
 }
 
 
+def trace(method, params):
+    """With CODEX_HYPRLAND_TRACE=<file>, append each command and its target
+    window (never text or values) as a JSON line, for debugging and recordings."""
+    path = os.environ.get('CODEX_HYPRLAND_TRACE')
+    if path and 'window' in params:
+        with open(path, 'a') as stream:
+            stream.write(json.dumps({'time': time.time(), 'command': method, 'window': params['window'].get('id') if isinstance(params['window'], dict) else None}) + '\n')
+
+
 def dispatch(backend, request):
     if not isinstance(request, dict):
         raise ValueError("Request must be an object")
@@ -43,6 +54,7 @@ def dispatch(backend, request):
         raise ValueError(f"Unsupported Sky Linux command: {method}")
     if not isinstance(params, dict) or params.keys() - PARAMETERS[method]:
         raise ValueError(f"Unsupported parameters for {method}")
+    trace(method, params)
     try:
         if method in INPUT_COMMANDS:
             backend.check_holds(method)
