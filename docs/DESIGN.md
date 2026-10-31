@@ -7,8 +7,10 @@ API. Public JavaScript signatures, app bindings, accessibility indices,
 observation emission, and image return types remain upstream.
 
 ```text
-Codex → official cua_repl / NodeREPL → private official cua / Sky copy
-                                      ↓ OAI_SKY_LINUX_BIN
+Codex → official cua_repl / NodeREPL → private official cua / Sky copy   (session sandbox)
+                                      ↓ nodeRepl.nativePipe, relayed by node_repl
+                     scripts/sky-broker.mjs in the cua_repl server        (outside the sandbox)
+                                      ↓ spawns OAI_SKY_LINUX_BIN
                                bin/sky-hyprland
                                       ↓
                     Hyprland module / Wayland / AT-SPI / XInput2
@@ -29,6 +31,47 @@ versions are recorded for diagnosis. Documentation updates and unrelated source
 changes do not block startup. Source hashes refresh the cache when the installed
 packages change. Installed Codex files are never edited. The incompatible
 community `native-client.mjs` API is not used.
+
+### Sandboxed Codex sessions
+
+Codex sends its sandbox state (`codex/sandbox-state-meta`: permission profile and
+workspace) with every tool call. `node_repl` then starts both the model's JavaScript
+kernel and the trusted worker that hosts the Sky service under `codex sandbox`
+(bwrap with user, PID, IPC and network namespaces and a seccomp filter); with
+`danger-full-access` it starts them unsandboxed. In the sandbox `connect()` on a Unix
+socket fails with `EPERM`, so a backend spawned by the worker, as upstream's Linux
+Sky does, cannot reach Hyprland's IPC socket, the D-Bus session bus or the AT-SPI
+bus (`atspi-ERROR: Couldn't connect to accessibility bus`).
+
+macOS Sky runs in the same sandboxed worker and reaches the Computer Use service,
+which runs outside the sandbox, over `nodeRepl.nativePipe`: the worker asks
+`node_repl` (never sandboxed itself) to connect to a Unix socket and relay bytes.
+This provider does the same. `scripts/launch.mjs`, the unsandboxed `cua_repl` server
+process, starts `scripts/sky-broker.mjs`, which listens on a socket in a private
+`$XDG_RUNTIME_DIR/codex-computer-use-hyprland/sky-<pid>-*/` directory and passes its
+path and a random token to `node_repl` as `CODEX_HYPRLAND_SKY_SOCKET` and
+`CODEX_HYPRLAND_SKY_TOKEN`. The overlay replaces Sky's Linux transport
+(`targets/linux/sky_linux.js`, same export and signature) with
+`scripts/runtime/sky_linux.js`, which opens one native-pipe connection per backend,
+sends `{token, args, cwd}`, and then speaks the unchanged Sky line protocol. The
+broker runs one `bin/sky-hyprland server` per connection with the server's
+environment; closing the connection ends that backend, and a backend exit is
+reported as `{exit}` before the connection closes, as upstream reports a child's
+exit. The same path is used in every mode, so sandboxed and full-access sessions
+run the same backend. Without `CODEX_HYPRLAND_SKY_SOCKET` (the overlay used without
+`launch.mjs`) the transport spawns the backend directly, as upstream does.
+
+Only the backend leaves the sandbox. The kernel's `nodeRepl` has no `nativePipe`
+and does not see the server's environment, so the model's code stays confined:
+it cannot connect to the broker, D-Bus or Hyprland, nor write outside the
+workspace. `node_repl` advertises the sandbox-state capability, and so applies the
+sandbox at all, only when it knows the Codex CLI (`CODEX_CLI_PATH`); `launch.mjs`
+therefore sets it whenever the runtime's `codex` exists, not only with the browser
+surface. Rejected alternatives: `NODE_REPL_WORKER_WRAPPER` or other ways of running
+the worker unsandboxed (the worker also hosts the browser service and handles
+requests from the kernel), widening `node_repl`'s sandbox permissions (Unix
+sockets would open for the model's code too), and inherited descriptors (the worker
+is started by `node_repl` through `codex sandbox`, not by the provider).
 
 ## Setup
 
@@ -439,6 +482,10 @@ DND prevent conflicting native delivery.
 
 Behaviour is checked by the end-to-end suite in `tests/e2e/` (see the README), locally with
 `./test --host` and in a disposable Arch VM with `./test`, which CI runs on every push.
+`tests/e2e/cases/sandbox.mjs` drives separate `cua_repl` servers with the sandbox state
+Codex sends for `workspace-write` and `danger-full-access`, checks that `node_repl`
+sandboxed (or did not sandbox) its processes, that the agent's input reached a
+disposable app, and that the model's code cannot reach the desktop's sockets.
 `.github/workflows/watch-upstream.yml` reruns it when OpenAI's package or Arch's
 Hyprland changes. `.github/workflows/hyprland-main.yml` runs it daily against each new
 commit of Hyprland's `main` (`E2E_HYPRLAND=git`): `tests/e2e/vm/hyprland-git.sh` builds that

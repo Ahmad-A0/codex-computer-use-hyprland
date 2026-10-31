@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { prepareRuntime } from './prepare-runtime.mjs';
+import { startBroker } from './sky-broker.mjs';
 import { root, checkout, python, cacheDir } from './paths.mjs';
 
 export { root };
@@ -38,12 +39,16 @@ export function environment(input = process.env) {
     browserEnv.BROWSER_USE_AVAILABLE_BACKENDS = input.BROWSER_USE_AVAILABLE_BACKENDS ?? 'chrome,iab';
     browserEnv.BROWSER_USE_TINYSKY_ENABLED = input.BROWSER_USE_TINYSKY_ENABLED ?? '1';
     browserEnv.CUA_REPL_BROWSER_ENV = input.CUA_REPL_BROWSER_ENV ?? 'codex-app';
-    const cli = input.CODEX_CLI_PATH ?? join(runtime, '..', 'codex');
-    if (existsSync(cli)) browserEnv.CODEX_CLI_PATH = cli;
   }
-  return { executable, launcher, env: {
+  // node_repl sandboxes its kernel and trusted worker with `codex sandbox` as
+  // Codex's sandbox metadata asks, and advertises that support only when it
+  // knows the Codex CLI; without it a sandboxed session's JavaScript would run
+  // unsandboxed.
+  const cli = input.CODEX_CLI_PATH ?? join(runtime, '..', 'codex');
+  return { executable, launcher, backend, env: {
     ...input,
     ...browserEnv,
+    ...(existsSync(cli) ? { CODEX_CLI_PATH: cli } : {}),
     CODEX_HYPRLAND_ROOT: root,
     CODEX_HYPRLAND_CACHE_DIR: cacheDir(input),
     OAI_SKY_LINUX_BIN: backend,
@@ -60,10 +65,15 @@ export function environment(input = process.env) {
 
 export async function launch() {
   const config = environment();
-  const child = spawn(config.executable, [config.launcher], { stdio: 'inherit', env: config.env });
+  // The backend runs here, outside the session's sandbox; the sandboxed trusted
+  // worker reaches it through node_repl's native pipe (scripts/sky-broker.mjs).
+  const broker = startBroker(config.backend, config.env);
+  const child = spawn(config.executable, [config.launcher], { stdio: 'inherit', env: {
+    ...config.env, CODEX_HYPRLAND_SKY_SOCKET: broker.socket, CODEX_HYPRLAND_SKY_TOKEN: broker.token,
+  }});
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-  child.on('error', error => { console.error(error.message); process.exitCode = 1; });
-  child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+  child.on('error', error => { console.error(error.message); process.exitCode = 1; broker.close(); });
+  child.on('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); broker.close(); });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await launch();

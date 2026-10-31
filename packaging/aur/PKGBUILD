@@ -55,7 +55,7 @@ package() {
   # presence marks a git checkout (scripts/paths.sh, src/codex_hyprland/paths.py).
   install -Dm755 -t "$pkgdir$root/bin" bin/codex-computer-use-hyprland bin/cua-repl-hyprland bin/sky-hyprland
   install -Dm644 -t "$pkgdir$root/scripts" \
-    scripts/{launch,paths,configure,prepare-runtime}.mjs \
+    scripts/{launch,paths,configure,prepare-runtime,sky-broker}.mjs \
     scripts/register-provider.py scripts/{runtime,paths}.sh
   install -Dm755 -t "$pkgdir$root/scripts" scripts/{build-native,hyprland-abi}.sh
   install -Dm644 -t "$pkgdir$root/scripts/runtime" scripts/runtime/*.js  # copied into the runtime overlay

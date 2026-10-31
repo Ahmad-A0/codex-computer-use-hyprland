@@ -77,6 +77,10 @@ Check everything with `codex-computer-use-hyprland doctor` (or `./doctor`).
 - The desktop's accessibility flag is switched on (as a screen reader would), so
   Chromium, Electron and Firefox expose their interfaces.
 - A `codex` workspace appears while the agent has apps open.
+- While a Codex session runs, a private socket in
+  `$XDG_RUNTIME_DIR/codex-computer-use-hyprland/` connects the session's sandboxed
+  computer-use code to the provider's backend, which runs outside the sandbox (as on
+  macOS); the model's own code stays sandboxed.
 
 ## Settings
 

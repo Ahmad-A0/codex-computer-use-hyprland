@@ -9,6 +9,9 @@
 //   - Sky's Linux targets/linux/create_client.js (@oai/cua's bundled copy and
 //     @oai/sky's) is generated from the create_<command> modules found beside it,
 //     plus our extra commands and the app-approval gate.
+//   - Sky's Linux targets/linux/sky_linux.js (the backend transport) is replaced
+//     by scripts/runtime/sky_linux.js, which reaches the backend outside Codex's
+//     sandbox through node_repl's native pipe (scripts/sky-broker.mjs).
 //   - The one patch: getApp(name) in create_tinysky_alt.js, anchored on literals.
 import {cpSync, readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, rmSync, readdirSync, symlinkSync} from 'node:fs';
 import {join, resolve, posix} from 'node:path';
@@ -30,7 +33,7 @@ const clientTypes=sky+'/types/full-desktop/FullDesktopComputerUseClient.d.ts';
 const ownFiles=[
   ['cua/'+tinysky,'bind_linux_app.js'],
   ['cua/'+tinysky,'hyprland_ax_diff.js'],
-  ...packages.flatMap(pkg=>[[pkg+'/'+linux,'hyprland_parity_commands.js'],[pkg+'/'+linux,'hyprland_app_approval.js']]),
+  ...packages.flatMap(pkg=>[[pkg+'/'+linux,'hyprland_parity_commands.js'],[pkg+'/'+linux,'hyprland_app_approval.js'],[pkg+'/'+linux,'sky_linux.js']]),
 ];
 // Commands the generated client adds (scripts/runtime/hyprland_parity_commands.js).
 const parityCommands=['resolve_app','select_text','set_value','paste'];
@@ -190,6 +193,21 @@ function reviewBinding(source) {
   return methods;
 }
 
+// Our sky_linux.js replaces upstream's: upstream must still export sky_linux
+// from that file (the create_<command> modules import it there), and the
+// upstream modules ours imports must still export what it uses.
+function reviewTransport(source) {
+  const replacement=readFileSync(join(own,'sky_linux.js'),'utf8');
+  for(const pkg of packages) {
+    const dir=join(source,pkg,linux);
+    if(!exportsOf(read(join(dir,'sky_linux.js'))).has('sky_linux')) throw layout(`@oai/${pkg}/${linux}/sky_linux.js no longer exports sky_linux.`);
+    for(const {from,names} of importsOf(replacement)) {
+      const lost=names.filter(name=>!exportsOf(read(join(dir,from))).has(name));
+      if(lost.length) throw layout(`@oai/${pkg}/${posix.join(linux,from)} no longer exports ${lost.join(', ')} (used by scripts/runtime/sky_linux.js).`);
+    }
+  }
+}
+
 // Load the finished overlay in a separate process: module linking proves every
 // import resolves, and the bound app and clients must expose their typed API.
 function selfCheck(temp,methods,commands) {
@@ -238,6 +256,7 @@ export function reviewRuntime(runtime) {
   // Validate only the layout we depend on. Versions remain diagnostic;
   // unrelated source changes invalidate the cache without rejecting the bundle.
   const methods=reviewBinding(source);
+  reviewTransport(source);
   const clients=Object.fromEntries(packages.map(pkg=>[pkg,generateClient(source,pkg)]));
   const tinyskyAlt=patchGetApp(read(join(source,'cua',cuaFile)),`@oai/cua/${cuaFile}`);
   const hash=digest.digest('hex').slice(0,20);
