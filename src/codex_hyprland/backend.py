@@ -801,7 +801,27 @@ class Backend:
             modifiers = ['Control', 'Shift'] if terminal else ['Control']
             def trigger():
                 background.send(c, 'key', key='v', modifiers=modifiers)
-            paste(c, value, format, trigger)
+            try:
+                paste(c, value, format, trigger)
+            except RuntimeError as error:
+                if 'did not consume' not in str(error):
+                    raise
+                raise RuntimeError(f"{error}{self.dialog_hint(c)}") from None
+
+    def dialog_hint(self, c):
+        """The app's other floating windows, as a dialog that may block c.
+
+        An app ignores the paste shortcut while one of its modal dialogs is open
+        (LibreOffice's welcome and Text Import dialogs). macOS binds the whole
+        app, so the agent sees such a dialog; a window binding here does not."""
+        others = [o for o in self.clients()
+                  if o["pid"] == c["pid"] and o["address"] != c["address"] and o.get("floating")]
+        if not others:
+            return ""
+        listed = ", ".join(f'"{o.get("title", "")}" (windowId {positive_id(int(o["address"], 16))})'
+                           for o in others[:4])
+        return (f". Another window of this app is open and may be a dialog blocking it: {listed}. "
+                "Bind it with cua.getApp({ windowId }) and finish it first")
 
     def clipboard_shortcut(self, c, key):
         terminal = self.ax.focused_terminal(c) or self.terminal_client(c)

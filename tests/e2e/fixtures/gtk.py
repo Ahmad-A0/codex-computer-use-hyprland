@@ -55,10 +55,16 @@ def clicked(*_):
     save()
 
 
+# E2E_BLOCKING_DIALOG=1: while its dialog is open the main window drops keys,
+# as apps with their own modality do (LibreOffice's welcome and import dialogs).
+blocking = os.environ.get('E2E_BLOCKING_DIALOG') == '1'
+open_dialogs = []
+
+
 def key(_, event):
     state['keys'].append(Gdk.keyval_name(event.keyval))
     save()
-    return False
+    return blocking and bool(open_dialogs)
 
 
 def open_dialog(*_):
@@ -72,10 +78,12 @@ def open_dialog(*_):
     def respond(_, response):
         if response == Gtk.ResponseType.OK:
             state['dialog'] = field.get_text()
+        open_dialogs.remove(dialog)
         dialog.destroy()
         save()
 
     dialog.connect('response', respond)
+    open_dialogs.append(dialog)
     dialog.show_all()
     state['dialogs'] += 1
     save()
