@@ -11,7 +11,8 @@ def ensure_session_env():
         return
     result = subprocess.run(['hyprctl', 'instances', '-j'], check=True,
                             capture_output=True, text=True, timeout=5)
-    instances = json.loads(result.stdout)
+    # hyprctl prints "\n]" rather than "[]" when no instance is running.
+    instances = json.loads(result.stdout) if result.stdout.strip() not in ('', ']') else []
     if signature:
         candidates = [item for item in instances if item['instance'] == signature]
     else:
