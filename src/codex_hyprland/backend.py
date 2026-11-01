@@ -309,7 +309,10 @@ class Backend:
         # Remember retired IDs to prevent a stale binding from hitting a reused address.
         for wid in self.identities.keys() - current:
             self.identities[wid] = None
-        dialogs = self.dialogs()
+        # A dialog has a parent window. Apps that do not set one (LibreOffice)
+        # still show dialogs floating above their tiled main window.
+        tiled = {c["pid"] for c in clients if not c.get("floating")}
+        dialogs = self.dialogs() | {c["address"] for c in clients if c.get("floating") and c["pid"] in tiled}
         return [self.window(c, active, dialogs) for c in clients]
 
     def apps(self):
