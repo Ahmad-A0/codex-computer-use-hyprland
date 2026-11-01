@@ -54,4 +54,4 @@ covers settings, updates and uninstalling.
 
 ## License
 
-MIT. An independent project, unaffiliated with OpenAI and Hyprland.
+MIT.
