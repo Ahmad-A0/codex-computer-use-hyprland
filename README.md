@@ -6,7 +6,7 @@ background, while you keep using your desktop.
 
 ![Codex painting a synthwave scene by hand in GIMP](docs/demo.gif)
 
-<sub>Codex (left) paints a synthwave scene with GIMP's own tools: gradients, selections, brushes and layers. 16 minutes, sped up 35×.</sub>
+<sub>Codex (left) paints a synthwave scene with GIMP's own tools: gradients, selections, brushes and layers.</sub>
 
 ## What you get
 
