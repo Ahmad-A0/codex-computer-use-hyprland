@@ -48,7 +48,6 @@ covers settings, updates and uninstalling.
 
 ## Limitations
 
-- `getApp` binds one window at a time.
 - Drag and drop between Wayland and XWayland windows is unsupported.
 - Terminals are driven from screenshots, since they expose no accessibility tree.
 - Computer-audio recording is unsupported.
