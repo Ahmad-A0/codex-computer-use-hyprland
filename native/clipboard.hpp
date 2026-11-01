@@ -85,30 +85,36 @@ inline std::vector<wl_resource*> devices(wl_client* client) {
     },&result);
     return result;
 }
+// A clipboard snapshot: arbitrary formats and bytes, read from a private file
+// written by the provider, as [mime, size] in file order.
+using Formats=std::vector<std::pair<std::string,std::string>>;
+inline Formats snapshot(json_object* j) {
+    Formats items;
+    auto path=str(j,"blob");auto runtime=getenv("XDG_RUNTIME_DIR");
+    require(runtime && path.starts_with(std::string(runtime)+"/codex-cua-request-"),"Invalid clipboard snapshot path");
+    struct File {int fd;~File(){if(fd>=0)close(fd);}} file{open(path.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW)};
+    require(file.fd>=0,"Cannot open clipboard snapshot");struct stat st{};
+    require(fstat(file.fd,&st)==0 && S_ISREG(st.st_mode) && st.st_uid==getuid() && (st.st_mode&077)==0 && st.st_size<=64*1024*1024,"Invalid clipboard snapshot file");
+    auto formats=field(j,"formats");require(json_object_is_type(formats,json_type_array) && json_object_array_length(formats)<=128,"Expected at most 128 clipboard formats");
+    off_t offset=0;
+    for(size_t i=0;i<json_object_array_length(formats);++i) {
+        auto* entry=json_object_array_get_idx(formats,i);require(json_object_is_type(entry,json_type_array) && json_object_array_length(entry)==2,"Expected [mime, size]");
+        auto* mime=json_object_get_string(json_object_array_get_idx(entry,0));auto size=json_object_get_int64(json_object_array_get_idx(entry,1));
+        std::string key=mime?mime:"";require(!key.empty() && key.size()<=255 && std::ranges::all_of(key,[](char c){return c>32 && c<127;}) && std::ranges::none_of(items,[&](auto& i){return i.first==key;}),"Invalid clipboard MIME type");
+        require(size>=0 && offset+size<=st.st_size,"Clipboard snapshot is truncated");
+        std::string bytes(size,'\0');size_t done=0;
+        while(done<bytes.size()){auto n=pread(file.fd,bytes.data()+done,bytes.size()-done,offset+done);if(n<0 && errno==EINTR)continue;require(n>0,"Cannot read clipboard snapshot");done+=n;}
+        offset+=size;items.emplace_back(key,std::move(bytes));
+    }
+    return items;
+}
 inline std::string begin(SP<CWLSurfaceResource> target,json_object* j) {
     collect();require(transfers.empty(),"Another private clipboard transaction is active");
     auto found=devices(target->client());require(!found.empty(),"Application has no Wayland clipboard device");
     auto transfer=std::make_shared<Transfer>();transfer->target=target;
     json_object* blob=nullptr;
     if(json_object_object_get_ex(j,"blob",&blob)) {
-        // A saved clipboard snapshot: arbitrary formats and bytes, read from a
-        // private file written by the provider, as [mime, size] in file order.
-        auto path=str(j,"blob");auto runtime=getenv("XDG_RUNTIME_DIR");
-        require(runtime && path.starts_with(std::string(runtime)+"/codex-cua-request-"),"Invalid clipboard snapshot path");
-        struct File {int fd;~File(){if(fd>=0)close(fd);}} file{open(path.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW)};
-        require(file.fd>=0,"Cannot open clipboard snapshot");struct stat st{};
-        require(fstat(file.fd,&st)==0 && S_ISREG(st.st_mode) && st.st_uid==getuid() && (st.st_mode&077)==0 && st.st_size<=64*1024*1024,"Invalid clipboard snapshot file");
-        auto formats=field(j,"formats");require(json_object_is_type(formats,json_type_array) && json_object_array_length(formats)<=128,"Expected at most 128 clipboard formats");
-        off_t offset=0;
-        for(size_t i=0;i<json_object_array_length(formats);++i) {
-            auto* entry=json_object_array_get_idx(formats,i);require(json_object_is_type(entry,json_type_array) && json_object_array_length(entry)==2,"Expected [mime, size]");
-            auto* mime=json_object_get_string(json_object_array_get_idx(entry,0));auto size=json_object_get_int64(json_object_array_get_idx(entry,1));
-            std::string key=mime?mime:"";require(!key.empty() && key.size()<=255 && std::ranges::all_of(key,[](char c){return c>32 && c<127;}) && !transfer->items.contains(key),"Invalid clipboard MIME type");
-            require(size>=0 && offset+size<=st.st_size,"Clipboard snapshot is truncated");
-            std::string bytes(size,'\0');size_t done=0;
-            while(done<bytes.size()){auto n=pread(file.fd,bytes.data()+done,bytes.size()-done,offset+done);if(n<0 && errno==EINTR)continue;require(n>0,"Cannot read clipboard snapshot");done+=n;}
-            offset+=size;transfer->items[key]=std::move(bytes);
-        }
+        for(auto& [mime,bytes]:snapshot(j))transfer->items[mime]=std::move(bytes);
     } else {
         auto items=field(j,"items");require(json_object_is_type(items,json_type_object),"Expected clipboard MIME map");
         size_t total=0;
@@ -141,17 +147,9 @@ inline std::string state(json_object* j,bool end) {
     if(end) {finish(t);transfers.erase(found);}
     return "{\"ok\":true,\"received\":"+std::to_string(t->received)+",\"completed\":"+std::to_string(t->completed)+",\"failed\":"+std::to_string(t->failed)+"}";
 }
-// Sky clipboard_read: while armed, the target client's new selection is kept
-// private instead of replacing the desktop clipboard, then read and cancelled.
-namespace Copy {
-inline CFunctionHook* hook=nullptr;
-inline wl_client* client=nullptr;
-inline SP<IDataSource> source;
-inline uint32_t started=0;
-inline void end(){if(source)source->cancelled();source.reset();client=nullptr;}
 // Hyprland leaves CWLDataSourceResource::m_device unset for most sources, so
-// find the source among the target client's own wl_data_source resources.
-inline bool owned(IDataSource* source){
+// find the source among the client's own wl_data_source resources.
+inline bool ownedBy(wl_client* client,IDataSource* source){
     struct Search {IDataSource* source; bool found=false;} search{source};
     wl_client_for_each_resource(client,[](wl_resource* r,void* data){
         auto* s=static_cast<Search*>(data);
@@ -160,6 +158,82 @@ inline bool owned(IDataSource* source){
     },&search);
     return search.found;
 }
+// A toolkit that owns the desktop selection answers its own paste from the
+// data it copied, never reading another offer (GTK 3 converts a selection its
+// process owns locally). Before a private paste into the app that holds the
+// user's clipboard, the module takes over that clipboard with a byte-exact copy
+// of every format the provider read from it (as the X11 helper does on
+// XWayland), so the app no longer owns a selection and reads the paste.
+namespace Kept {
+struct Source : IDataSource {
+    Formats items; bool released=false;
+    std::vector<std::string> mimes() override {std::vector<std::string> r;for(auto& i:items)r.push_back(i.first);return r;}
+    void send(const std::string& mime,Hyprutils::OS::CFileDescriptor fd) override {
+        auto found=std::ranges::find_if(items,[&](auto& i){return i.first==mime;});
+        if(found==items.end())return;
+        auto w=std::make_unique<Writer>();w->fd=fd.take();w->bytes=found->second;w->transfer=std::make_shared<Transfer>();
+        if(fcntl(w->fd,F_SETFL,fcntl(w->fd,F_GETFL)|O_NONBLOCK)<0)return;
+        w->event=wl_event_loop_add_fd(wl_display_get_event_loop(g_pCompositor->m_wlDisplay),w->fd,WL_EVENT_WRITABLE,writeReady,w.get());
+        if(!w->event)return;
+        writeReady(w->fd,WL_EVENT_WRITABLE,w.get());writers.push_back(std::move(w));
+    }
+    void accepted(const std::string&) override {}
+    void cancelled() override {released=true;}
+    void error(uint32_t,const std::string&) override {}
+};
+inline SP<Source> current;
+inline void collect(){if(current && current->released)current.reset();}
+inline std::string identity(){return std::to_string(reinterpret_cast<uintptr_t>(g_pSeatManager->m_selection.currentSelection.lock().get()));}
+inline SP<IDataSource> selection(wl_client* client,json_object* j){
+    auto source=g_pSeatManager->m_selection.currentSelection.lock();
+    require(source && identity()==str(j,"identity") && source->type()==DATA_SOURCE_TYPE_WAYLAND && ownedBy(client,source.get()),"Clipboard changed; paste not started");
+    return source;
+}
+inline std::string owner(wl_client* client){
+    auto source=g_pSeatManager->m_selection.currentSelection.lock();
+    bool own=source && source->type()==DATA_SOURCE_TYPE_WAYLAND && ownedBy(client,source.get());
+    Json reply(json_object_new_object(),json_object_put);json_object_object_add(reply.get(),"ok",json_object_new_boolean(true));
+    json_object_object_add(reply.get(),"own",json_object_new_boolean(own));
+    json_object_object_add(reply.get(),"identity",json_object_new_string(identity().c_str()));
+    auto* mimes=json_object_new_array();if(own)for(auto& mime:source->mimes())json_object_array_add(mimes,json_object_new_string(mime.c_str()));
+    json_object_object_add(reply.get(),"mimes",mimes);
+    return json_object_to_json_string_ext(reply.get(),JSON_C_TO_STRING_PLAIN);
+}
+// The provider opens the FIFO's read end first and reads until EOF.
+inline std::string read(wl_client* client,json_object* j){
+    auto source=selection(client,j);
+    auto mime=str(j,"mime");auto mimes=source->mimes();require(std::ranges::find(mimes,mime)!=mimes.end(),"Clipboard lacks that format");
+    auto path=str(j,"path");auto runtime=getenv("XDG_RUNTIME_DIR");
+    require(runtime && path.starts_with(std::string(runtime)+"/codex-cua-request-"),"Invalid clipboard pipe path");
+    int fd=open(path.c_str(),O_WRONLY|O_NONBLOCK|O_CLOEXEC|O_NOFOLLOW);require(fd>=0,"Cannot open clipboard pipe");
+    struct stat st{};if(fstat(fd,&st)!=0 || !S_ISFIFO(st.st_mode) || st.st_uid!=getuid()){close(fd);throw std::runtime_error("Invalid clipboard pipe");}
+    fcntl(fd,F_SETFL,fcntl(fd,F_GETFL)&~O_NONBLOCK);
+    source->send(mime,Hyprutils::OS::CFileDescriptor{fd});
+    wl_client_flush(client);
+    return R"({"ok":true})";
+}
+inline std::string adopt(wl_client* client,json_object* j){
+    selection(client,j);
+    auto source=makeShared<Source>();source->items=snapshot(j);
+    require(!source->items.empty(),"Empty clipboard snapshot");
+    collect();g_pSeatManager->setCurrentSelection(source);current=source;
+    return R"({"ok":true})";
+}
+// Unloading takes the module's source away: the desktop selection is cleared.
+inline void clear(){
+    if(current && !current->released && g_pSeatManager->m_selection.currentSelection.lock().get()==current.get())g_pSeatManager->setCurrentSelection(nullptr);
+    current.reset();
+}
+}
+// Sky clipboard_read: while armed, the target client's new selection is kept
+// private instead of replacing the desktop clipboard, then read and cancelled.
+namespace Copy {
+inline CFunctionHook* hook=nullptr;
+inline wl_client* client=nullptr;
+inline SP<IDataSource> source;
+inline uint32_t started=0;
+inline void end(){if(source)source->cancelled();source.reset();client=nullptr;}
+inline bool owned(IDataSource* source){return ownedBy(client,source);}
 inline void intercept(CSeatManager* seat,SP<IDataSource> requested){
     if(client && requested && requested->type()==DATA_SOURCE_TYPE_WAYLAND && owned(requested.get())) {
         if(source && source!=requested)source->cancelled();
@@ -207,6 +281,7 @@ inline void setup(HANDLE plugin) {
             std::erase_if(writers,[&](auto& w){return w->transfer==t;});it=transfers.erase(it);
         }
         if(Copy::client && now()-Copy::started>=30000)Copy::end();
+        Kept::collect();
         collect();wl_event_source_timer_update(watchdog,1000);return 0;
     },nullptr);
     require(watchdog,"Cannot arm clipboard cleanup timer");wl_event_source_timer_update(watchdog,1000);
@@ -220,7 +295,7 @@ inline void drain() {
     g_pSeatManager->m_events.setSelection.emit();
 }
 inline void clear() {
-    Copy::end();if(Copy::hook){Copy::hook->unhook();Copy::hook=nullptr;}
+    Copy::end();Kept::clear();if(Copy::hook){Copy::hook->unhook();Copy::hook=nullptr;}
     if(watchdog){wl_event_source_remove(watchdog);watchdog=nullptr;}
     for(auto& [id,t]:transfers) if(auto target=t->target.lock())
         for(auto* d:devices(target->client()))wl_data_device_send_selection(d,nullptr);
