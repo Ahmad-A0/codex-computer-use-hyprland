@@ -267,7 +267,14 @@ queued before it, such as a long typed text. The transaction therefore ends only
 after a read that follows the shortcut, with the window's frame callbacks
 serviced meanwhile if it is hidden (an app that read the offer at once and reads
 no more gets five seconds); a paste must never find the user's clipboard or no
-selection at all. XWayland paste
+selection at all. A toolkit answers a paste in the app that owns the desktop
+selection from its own data and reads no offer (GTK 3 converts a selection its
+process owns locally, so Firefox pasted the user's copy, or nothing). Before a
+paste into the app holding the user's clipboard, the provider therefore reads
+every format of it through the module, which then takes the selection over with
+those bytes: the clipboard keeps its contents, now held by the compositor module
+(until the next copy, or cleared if the module is unloaded), and the app reads
+the private offer. XWayland paste
 snapshots every available clipboard data format, temporarily owns the X selection,
 and restores the previous formats unless a newer copy replaced the selection. A
 small owner process retains the restored data until the next copy or X server exit.

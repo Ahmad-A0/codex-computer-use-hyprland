@@ -66,6 +66,43 @@ def paste_items(client, items, trigger):
         return offer(client, {'blob': blob.name, 'formats': formats}, trigger)
 
 
+def disown(client):
+    """Make the module hold the user's clipboard if the target app holds it.
+
+    A toolkit answers a paste in the app that owns the desktop selection from
+    its own copied data and reads no offer (GTK 3, so Firefox, after the user
+    copied in it). Every format is read and the module takes over the selection
+    with those bytes; the user's clipboard keeps its contents, and the app,
+    no longer its owner, reads the private offer."""
+    state = background.send(client, 'selection_owner')
+    if not state['own']:
+        return
+    identity = state['identity']
+    mimes = [m for m in dict.fromkeys(state['mimes']) if m not in SELECTION_REQUESTS]
+    if len(mimes) > 128:
+        raise RuntimeError('Clipboard advertises too many formats')
+    formats, total, deadline = [], 0, time.monotonic() + 10
+    with tempfile.TemporaryDirectory(prefix='codex-cua-request-', dir=os.environ['XDG_RUNTIME_DIR']) as directory:
+        for index, mime in enumerate(mimes):
+            pipe = os.path.join(directory, str(index))
+            os.mkfifo(pipe, 0o600)
+            fd = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+            try:
+                background.send(client, 'selection_read', identity=identity, mime=mime, path=pipe)
+                data = read_pipe(fd, min(32 << 20, (64 << 20) - total), deadline, mime)
+            finally:
+                os.close(fd)
+            formats.append((mime, data)); total += len(data)
+    if not formats:
+        raise RuntimeError('The application holding the clipboard offers no readable format')
+    with tempfile.NamedTemporaryFile(prefix='codex-cua-request-', dir=os.environ['XDG_RUNTIME_DIR']) as blob:
+        for _, data in formats:
+            blob.write(data)
+        blob.flush()
+        background.send(client, 'selection_adopt', identity=identity, blob=blob.name,
+                        formats=[[mime, len(data)] for mime, data in formats])
+
+
 def offer(client, fields, trigger):
     """Offer data privately to the client and run its paste.
 
@@ -77,6 +114,7 @@ def offer(client, fields, trigger):
     since a toolkit that redrew waits for one before reading further input.
     Ending the transaction at the early read let the paste find another
     selection (Chromium then pasted nothing, or the user's clipboard)."""
+    disown(client)
     token = background.send(client, 'paste_begin', **fields)['token']
     lease = None
     try:

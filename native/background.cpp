@@ -332,6 +332,9 @@ std::string handle(std::string request) {
         }
         if(op=="copy_begin"){keyboard(window,seat,j.get(),"focus");return Clipboard::Copy::begin(main);}
         if(op=="ax_probe" || op=="ax_probe_clear"){require(!g_pSeatManager->m_seatGrab,"Seat grab active");keyboard(window,seat,j.get(),op=="ax_probe"?"probe":"probe_clear");return R"({"ok":true})";}
+        if(op=="selection_owner")return Clipboard::Kept::owner(main->client());
+        if(op=="selection_read")return Clipboard::Kept::read(main->client(),j.get());
+        if(op=="selection_adopt")return Clipboard::Kept::adopt(main->client(),j.get());
         if(op=="paste_begin") {require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(main),"Unrelated seat grab active");keyboard(window,seat,j.get(),"focus");return Clipboard::begin(main,j.get());}
         if(op=="text" || op=="key" || op=="hold") { require(!g_pSeatManager->m_seatGrab || g_pSeatManager->m_seatGrab->accepts(main),"Unrelated seat grab active");keyboard(window,seat,j.get(),op); return R"({"ok":true,"epoch":)"+std::to_string(Held::epoch)+"}"; }
         require(op=="click"||op=="scroll"||op=="drag"||op=="move"||op=="point","Unknown operation");
