@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, openSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -63,12 +63,21 @@ export function environment(input = process.env) {
   }};
 }
 
+function reopen(fd, mode) {
+  try { return openSync(`/proc/self/fd/${fd}`, mode); } catch { return 'inherit'; }
+}
+
 export async function launch() {
   const config = environment();
   // The backend runs here, outside the session's sandbox; the sandboxed trusted
   // worker reaches it through node_repl's native pipe (scripts/sky-broker.mjs).
   const broker = startBroker(config.backend, config.env);
-  const child = spawn(config.executable, [config.launcher], { stdio: 'inherit', env: {
+  // The MCP server gets its own descriptions of our stdin/stdout pipes. Node
+  // makes a pipe it uses non-blocking, which on a shared description reaches
+  // the server too; node_repl then drops any response larger than the pipe
+  // buffer (a screenshot) with EAGAIN, and Codex waits for it until timeout.
+  const stdio = [reopen(0, 'r'), reopen(1, 'w'), 'inherit'];
+  const child = spawn(config.executable, [config.launcher], { stdio, env: {
     ...config.env, CODEX_HYPRLAND_SKY_SOCKET: broker.socket, CODEX_HYPRLAND_SKY_TOKEN: broker.token,
   }});
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));

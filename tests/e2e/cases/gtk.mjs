@@ -120,6 +120,15 @@ export default function (test) {
     expect(result.changed, 'screenshot did not change after the window changed (stale frame)');
   });
 
+  // Codex reads responses from a pipe. A screenshot is larger than the pipe
+  // buffer; a non-blocking pipe made node_repl drop it, and Codex waited 300 s.
+  test('GTK: a screenshot shown to the model arrives whole (larger than a pipe buffer)', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
+    await js(`await gtk.getScreenshot();`, { timeout: 30000 });
+    const images = (provider.last.content ?? []).filter((item) => item.type === 'image');
+    expect(images.length === 1 && images[0].data.length > 65536, `no full screenshot in the response: ${JSON.stringify(provider.last).slice(0, 300)}`);
+  });
+
   test('GTK: getApp reuses the running app', async () => {
     await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     const before = clients().length;

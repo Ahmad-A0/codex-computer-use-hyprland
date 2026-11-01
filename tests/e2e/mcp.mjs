@@ -15,7 +15,11 @@ export class Provider {
     this.decline = new Set(); // app IDs whose approval prompts are declined
     this.stderr = '';
     this.session = randomUUID();
-    this.process = spawn(node, [launcher], { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+    // Codex connects MCP servers through pipes; Node's 'pipe' stdio is a socket
+    // pair, which behaves differently (a pipe's O_NONBLOCK is shared by every
+    // process holding it). cat puts real pipes on both ends, as Codex does.
+    this.process = spawn('/bin/sh', ['-c', 'cat | "$0" "$1" | cat', node, launcher],
+      { env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
     this.process.stderr.on('data', (data) => { this.stderr = (this.stderr + data).slice(-20000); });
     this.process.on('exit', (code) => {
       for (const item of this.pending.values()) item.reject(new Error(`Provider exited ${code}: ${this.stderr.slice(-1500)}`));
@@ -81,6 +85,7 @@ export class Provider {
       name: 'js',
       arguments: { code, timeout_ms: timeout },
     }, timeout + 30000);
+    this.last = result; // the whole response, images included
     const text = (result.content ?? []).filter((item) => item.type === 'text').map((item) => item.text).join('\n');
     if (result.isError || /(?:^|\n)(?:Error|RuntimeError|TypeError|ReferenceError|SyntaxError):/.test(text)) {
       // Errors come first, then what the call displayed (such as getApp's state).
