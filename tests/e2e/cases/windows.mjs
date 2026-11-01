@@ -70,10 +70,12 @@ export default function (test) {
   test('covered: input reaches a window below a fullscreen window on its workspace', async () => {
     await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
     const target = client('codex-e2e-gtk');
-    launchDirect(`/usr/bin/env GDK_BACKEND=wayland python3 ${gtkFixture} ${statePath('codex-e2e-cover')} codex-e2e-cover "Codex E2E Cover"`,
-      { rules: 'fullscreen on' });
+    launchDirect(`/usr/bin/env GDK_BACKEND=wayland python3 ${gtkFixture} ${statePath('codex-e2e-cover')} codex-e2e-cover "Codex E2E Cover"`);
     const cover = () => clients().find((c) => c.title === 'Codex E2E Cover');
     try {
+      // Hyprland 0.57 ignores a fullscreen launch rule, so fullscreen it once mapped.
+      await until(() => Boolean(cover()), 'the cover window', 20000);
+      execFileSync('hyprctl', ['dispatch', `hl.dsp.window.fullscreen({ window = "address:${cover().address}" })`]);
       await until(() => cover()?.fullscreen > 0 && cover().workspace.name === target.workspace.name,
         'a fullscreen window over the target', 20000);
       // The precondition the test is about (hyprctl reports it on releases).

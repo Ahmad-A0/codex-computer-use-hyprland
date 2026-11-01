@@ -8,6 +8,8 @@ set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$project_dir"
 if [ "${1:-}" = --host ]; then
+  # Test this tree, not whatever was last installed into .venv.
+  scripts/setup.sh >/dev/null
   . "$project_dir/scripts/runtime.sh"
   exec "$CODEX_CUA_RUNTIME/bin/node" tests/e2e/suite.mjs
 fi

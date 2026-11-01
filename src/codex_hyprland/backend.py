@@ -809,13 +809,13 @@ class Backend:
                 raise RuntimeError(f"{error}{self.dialog_hint(c)}") from None
 
     def dialog_hint(self, c):
-        """The app's other floating windows, as a dialog that may block c.
+        """The app's other windows, one of which may be a dialog blocking c.
 
         An app ignores the paste shortcut while one of its modal dialogs is open
         (LibreOffice's welcome and Text Import dialogs). macOS binds the whole
         app, so the agent sees such a dialog; a window binding here does not."""
         others = [o for o in self.clients()
-                  if o["pid"] == c["pid"] and o["address"] != c["address"] and o.get("floating")]
+                  if o["pid"] == c["pid"] and o["address"] != c["address"]]
         if not others:
             return ""
         listed = ", ".join(f'"{o.get("title", "")}" (windowId {positive_id(int(o["address"], 16))})'
