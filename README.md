@@ -1,8 +1,8 @@
 # codex-computer-use-hyprland
 
 Computer use for [Codex](https://github.com/openai/codex) on [Hyprland](https://hypr.land).
-Codex sees and operates native Linux apps the way it does on macOS, in the
-background, while you keep using your desktop.
+Codex can see and operate native Linux apps the way it does on macOS, in the
+background, without touching your cursor, keyboard focus or current workspace.
 
 ![Codex painting a synthwave scene by hand in GIMP](docs/demo.gif)
 
