@@ -69,10 +69,19 @@ def capture(client):
         if lease.get('copyable') is False:
             raise RuntimeError('Hyprland cannot capture this window: it lies outside the monitor of its workspace. '
                                'Move it onto that monitor to take screenshots.')
-        try:
-            return subprocess.run(['grim', '-T', stable, '-s', '1', '-t', 'png', '-'], check=True, capture_output=True, timeout=15).stdout
-        except subprocess.TimeoutExpired:
-            raise RuntimeError('Hyprland did not deliver a capture of this window within 15 seconds') from None
+        # Hyprland 0.57 fails a frame whose buffer no longer matches the window
+        # (it was resizing, e.g. after a text change), and grim 1.5 then
+        # crashes instead of exiting. The next attempt sees the settled size.
+        for attempt in range(4):
+            try:
+                return subprocess.run(['grim', '-T', stable, '-s', '1', '-t', 'png', '-'], check=True, capture_output=True, timeout=15).stdout
+            except subprocess.TimeoutExpired:
+                raise RuntimeError('Hyprland did not deliver a capture of this window within 15 seconds') from None
+            except subprocess.CalledProcessError:
+                if attempt == 3:
+                    raise RuntimeError('Hyprland failed to capture this window (it kept changing size)') from None
+                time.sleep(0.1 * (attempt + 1))
+                settle(client)
 
 
 @contextlib.contextmanager
