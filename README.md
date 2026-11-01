@@ -4,10 +4,6 @@ Computer use for [Codex](https://github.com/openai/codex) on [Hyprland](https://
 Codex can see and operate native Linux apps the way it does on macOS, in the
 background, without touching your cursor, keyboard focus or current workspace.
 
-![Codex building a budget in LibreOffice Calc, painting a sunset in GIMP and setting it as the wallpaper](docs/demo.gif)
-
-<sub>Codex (left) turns trip notes into a Calc budget with a chart, paints a sunset by hand in GIMP, then sets it as the wallpaper. Each app is driven in the background through accessibility and synthetic input. Sped up 16×.</sub>
-
 ## What you get
 
 - **The same API as macOS.** Codex's own `cua_repl` tool is unchanged:
