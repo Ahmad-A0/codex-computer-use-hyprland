@@ -281,13 +281,20 @@ class Backend:
     def clients(self):
         return [c for c in self.hypr.query("clients") if c.get("mapped", True)]
 
-    def window(self, c, active=None):
+    def dialogs(self):
+        """Addresses of windows that have a parent window (dialogs), from the plugin."""
+        try:
+            return set(background.send({"address": "0x0"}, "parents")["parents"])
+        except (RuntimeError, KeyError):
+            return set()
+
+    def window(self, c, active=None, dialogs=frozenset()):
         wid = positive_id(int(c["address"], 16))
         self.identities.setdefault(wid, (c["pid"], c.get("initialClass", c.get("class"))))
         info = {"id": wid, "pid": c["pid"], "app": c.get("class") or c.get("initialClass") or "unknown",
                 "title": c.get("title", ""), "x": c["at"][0], "y": c["at"][1],
                 "width": c["size"][0], "height": c["size"][1],
-                "focused": c["address"] == active, "modal": False,
+                "focused": c["address"] == active, "modal": c["address"] in dialogs,
                 "window_type": "normal"}
         # Hyprland reuses a closed window's address (the ID) for a later window,
         # also of the same app (its next dialog); its stable ID tells them apart.
@@ -302,7 +309,8 @@ class Backend:
         # Remember retired IDs to prevent a stale binding from hitting a reused address.
         for wid in self.identities.keys() - current:
             self.identities[wid] = None
-        return [self.window(c, active) for c in clients]
+        dialogs = self.dialogs()
+        return [self.window(c, active, dialogs) for c in clients]
 
     def apps(self):
         return [a for a in self.gio.AppInfo.get_all() if a.get_id() and a.should_show()]

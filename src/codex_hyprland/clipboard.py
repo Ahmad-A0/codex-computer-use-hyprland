@@ -6,7 +6,7 @@ import select
 import subprocess
 import time
 import tempfile
-from . import background
+from . import background, desktop
 
 class PlainText(HTMLParser):
     def __init__(self):
@@ -91,8 +91,11 @@ def offer(client, fields, trigger):
             time.sleep(.025)
             if (now := status()) != early:
                 early, since = now, time.monotonic()
+        def own_windows():
+            return {c['address'] for c in desktop.query('clients') if c.get('pid') == client['pid']}
+        before = own_windows()
         trigger()
-        start = quiet = leased = time.monotonic()
+        start = quiet = leased = checked = time.monotonic()
         lease = background.send(client, 'refresh_begin')['token']
         last = None
         while True:
@@ -106,6 +109,13 @@ def offer(client, fields, trigger):
             # An app that pastes what it read when offered reads no more.
             if done and early[1] and now - start >= 5:
                 return
+            # The app answered the paste with a window of its own (LibreOffice's
+            # Text Import dialog, slow to open, reads the offer before it): the
+            # paste was handled; the agent continues in that dialog.
+            if now - checked >= .25:
+                checked = now
+                if own_windows() - before:
+                    return
             if now - start >= 10:
                 raise RuntimeError('Application did not consume the private clipboard offer')
             if now - leased >= 4:  # leases lapse after five seconds

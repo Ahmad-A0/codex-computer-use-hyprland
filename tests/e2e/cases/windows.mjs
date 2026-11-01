@@ -36,7 +36,26 @@ export default function (test) {
   });
 
   test('dialog: a closed window gives a clear error, not a misdirected action', async () => {
-    await rejects(`await dlg.click(dialogOk);`, /unavailable|getAXState|refresh/i);
+    const clicks = state('codex-e2e-gtk').clicks;
+    await rejects(`await dlg.click(dialogOk);`, /closed; this app binding now follows .*Nothing was sent/);
+    expect(state('codex-e2e-gtk').clicks === clicks, 'the click reached the main window');
+  });
+
+  // macOS binds the whole app: its binding shows the app's dialog and, once a
+  // dialog it drove closes, the app's remaining window.
+  test('dialog: the binding names the app\'s open dialog and follows the app when that dialog closes', async () => {
+    await ensure('gtk', 'codex-e2e-gtk.desktop', { timeout: 30000 });
+    if (!dialog()) await js(`await gtk.click(await e2eFind(gtk, "Open dialog", "button"));`);
+    await until(() => Boolean(dialog()), 'dialog window', 10000);
+    const main = await js(`await gtk.getAXState();`);
+    expect(main.includes('This app also has a dialog open: "Codex E2E Dialog"'), `the open dialog is not named: ${main.slice(0, 600)}`);
+    // Escape closes the dialog it is sent to: that is the key taking effect, not an error.
+    await js(`globalThis.dlg2 = await cua.getApp({ windowId: (await e2eWindow("Codex E2E Dialog")).id });
+      await dlg2.pressKey("Escape");`);
+    await until(() => !dialog(), 'Escape closed the dialog', 10000);
+    const after = await js(`await dlg2.getAXState();`);
+    expect(after.includes('now follows its window "Codex E2E GTK"') && after.includes('E2E entry'),
+      `the binding did not follow the app: ${after.slice(0, 600)}`);
   });
 
   // An app with its own modality (LibreOffice) ignores the paste shortcut in

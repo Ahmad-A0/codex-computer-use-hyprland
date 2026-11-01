@@ -254,12 +254,15 @@ export default function (test) {
       await js(`await lifeInner.setValue(${find('lifeInner', ENTRY, 'Inner entry')}, "inner value");
         await lifeInner.click(${find('lifeInner', BUTTON, 'Inner OK')});`);
       await until(() => life('codex-e2e-life-dialogs').inner === 'inner value' && !one('Codex E2E Life Inner'), 'inner dialog result');
-      // The outer dialog shows the nested result; the closed inner one gives a clear error.
+      // The outer dialog shows the nested result. An action on the closed inner
+      // dialog sends nothing and says the binding now follows the app (macOS
+      // binds the whole app).
       const outerTree = await data(`await lifeWait(async () => (await lifeOuter.getAXState({ emit: false, disableDiffing: true }))
           .includes("Outer status: inner value") || "outer status not updated", "outer status");
         let stale = null; try { await lifeInner.setValue(0, "stale"); } catch (e) { stale = e.message; }
         ${write('{ stale }')}`);
-      expect(/unavailable|reused/i.test(outerTree.stale ?? ''), `stale inner binding: ${outerTree.stale}`);
+      expect(/closed; this app binding now follows .*Nothing was sent/.test(outerTree.stale ?? '')
+        && !JSON.stringify(life('codex-e2e-life-dialogs')).includes('stale'), `stale inner binding: ${outerTree.stale}`);
       await js(`await lifeOuter.click(${find('lifeOuter', BUTTON, 'Outer OK')});`);
       await until(() => life('codex-e2e-life-dialogs').outer === 'outer value|inner value' && !one('Codex E2E Life Outer'),
         'outer dialog result');
@@ -333,7 +336,7 @@ export default function (test) {
       const reused = parseInt(one('Codex E2E Life Save File').address, 16) === openId;
       const stale = await data(`let error = null; try { await lifeOpen.pressKey("Escape"); } catch (e) { error = e.message; }
         ${write('{ error }')}`);
-      expect(/unavailable|reused/i.test(stale.error ?? ''), `stale Open dialog binding (address reused: ${reused}): ${stale.error}`);
+      expect(/closed; this app binding now follows .*Nothing was sent/.test(stale.error ?? ''), `stale Open dialog binding (address reused: ${reused}): ${stale.error}`);
       expect(one('Codex E2E Life Save File') && !life('codex-e2e-life-dialogs').events.some((e) => e[0] === 'saved-closed'),
         `Escape sent to the closed Open dialog closed the Save dialog (address reused: ${reused})`);
       // The folder name field appears in a popover (focused, and a new text
@@ -430,7 +433,7 @@ export default function (test) {
       const stale = await data(`let error = null; try { await lifeExtras[${first}].typeText("stale"); } catch (e) { error = e.message; }
         await lifeExtras[${second}].setValue(${find(`lifeExtras[${second}]`, ENTRY, 'Extra entry')}, "still bound");
         ${write('{ error }')}`);
-      expect(/unavailable|reused/i.test(stale.error ?? ''), `stale extra binding: ${stale.error}`);
+      expect(/closed; this app binding now follows .*Nothing was sent/.test(stale.error ?? ''), `stale extra binding: ${stale.error}`);
       await until(() => JSON.stringify(texts()) === '["still bound"]', 'the remaining window is still driven');
       await js(`await lifeExtras[${second}].click(${find(`lifeExtras[${second}]`, BUTTON, 'Close extra')});`);
       await until(() => extras().length === 0, 'extra windows closed');

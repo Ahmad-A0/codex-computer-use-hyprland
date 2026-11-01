@@ -266,6 +266,18 @@ std::string handle(std::string request) {
         if(op=="copy_end"){Clipboard::Copy::end();return R"({"ok":true})";}
         if(op=="launched")return Placement::launched(j.get());
         if(op=="refresh_end"){Capture::release(num(j.get(),"token"));return R"({"ok":true})";}
+        // Each mapped window's parent toplevel (a dialog's owner), by address as
+        // hyprctl prints them; list_windows reports these windows as modal.
+        if(op=="parents"){
+            Json reply(json_object_new_object(),json_object_put),parents(json_object_new_object(),json_object_put);
+            for(auto& w:Desktop::windowState()->windows())
+                if(auto parent=Compat::parent(w); parent && Compat::mapped(w))
+                    json_object_object_add(parents.get(),std::format("0x{:x}",reinterpret_cast<uintptr_t>(w.get())).c_str(),
+                        json_object_new_string(std::format("0x{:x}",reinterpret_cast<uintptr_t>(parent.get())).c_str()));
+            json_object_object_add(reply.get(),"ok",json_object_new_boolean(true));
+            json_object_object_add(reply.get(),"parents",json_object_get(parents.get()));
+            return json_object_to_json_string_ext(reply.get(),JSON_C_TO_STRING_PLAIN);
+        }
         auto window=Desktop::viewState()->query().selector("address:"+str(j.get(),"address")).runWindow();
         require(window && Desktop::View::validMapped(window),"Target is not mapped");
 
