@@ -19,6 +19,8 @@ export XDG_RUNTIME_DIR
     if [ ! -d "$dir/.git" ]; then
       echo "First start: installing the Hyprland provider into $dir" >&2
       git clone -q "$repo" "$dir.tmp.$$"
+      # Detached, like every release checkout: update.sh never moves a branch.
+      git -C "$dir.tmp.$$" checkout -q --detach
       mv "$dir.tmp.$$" "$dir"
     fi
     exec 9>&-
