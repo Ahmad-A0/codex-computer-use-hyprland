@@ -9,7 +9,7 @@
       "omit_tools_from": ["code_mode", "deferred"],
       "startup_timeout_sec": 300,
       "tools": { "js": { "output_token_limit": 25000 } },
-      "env_vars": ["HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY"],
+      "env_vars": ["HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY", "CODEX_HYPRLAND_REPO", "CODEX_HYPRLAND_HOME"],
       "env": { "CUA_REPL_ENABLED_SURFACES": "browser,computer" }
     }
   }

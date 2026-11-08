@@ -104,9 +104,10 @@ async function e2eWindow(title, app) {
 }
 
 export const runtime = resolveRuntime();
+// E2E_LAUNCHER: drive an installed Codex plugin's cua_repl command instead of this tree.
 export const providerOptions = {
-  node: join(runtime, 'bin/node'),
-  launcher: join(root, 'scripts/launch.mjs'),
+  node: process.env.E2E_LAUNCHER ? '/bin/sh' : join(runtime, 'bin/node'),
+  launcher: process.env.E2E_LAUNCHER || join(root, 'scripts/launch.mjs'),
   env: { ...process.env, CODEX_CUA_RUNTIME: runtime, CUA_REPL_ENABLED_SURFACES: 'computer', XDG_DATA_HOME: out,
     PATH: `${join(out, 'bin')}:${process.env.PATH}` },
 };

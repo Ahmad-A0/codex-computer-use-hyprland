@@ -18,6 +18,8 @@
 #                    variant provisions with all host CPUs and spare memory)
 #   E2E_ARTIFACTS    results, logs, versions.json, screenshot (default ./e2e-artifacts)
 #   E2E_ONLY         passed through to the suite
+#   E2E_INSTALL      checkout (default): ./install. plugin: `codex plugin add`, then
+#                    the suite drives the plugin's cua_repl command
 #   E2E_TIMEOUT      suite time limit in seconds (default 1500)
 # --cache-keys prints ready=<provisioned disk key> and base=<cloud image key>.
 # Keys: release <date>-<hash>, git git-<commit>-<date>-<hash>, where the hash
@@ -222,12 +224,28 @@ print(json.dumps(versions))
 EOF' > "$artifacts/versions.json"
 cat "$artifacts/versions.json"
 
-session ./install 2>&1 | tee "$artifacts/install.log"
-mark install
-session ./doctor 2>&1 | tee "$artifacts/doctor.log"
+launcher=
+case ${E2E_INSTALL:-checkout} in
+  checkout)
+    session ./install 2>&1 | tee "$artifacts/install.log"
+    mark install
+    session ./doctor 2>&1 | tee "$artifacts/doctor.log" ;;
+  plugin)
+    # As a user would: `codex plugin add`, whose first start installs the latest
+    # release into ~/.local/share. This tree, committed and tagged in the guest,
+    # stands in for the GitHub repository.
+    launcher='$HOME/.codex/plugins/cache/codex-computer-use-hyprland/hyprland-computer-use/*/bin/start'
+    session "git init -q && git add -A && git -c user.name=e2e -c user.email=e2e@invalid commit -qm e2e && git tag v999.0.0 &&
+      codex plugin marketplace add ~/$repo && codex plugin add hyprland-computer-use@codex-computer-use-hyprland && codex mcp list &&
+      CODEX_HYPRLAND_REPO=~/$repo timeout 900 sh $launcher </dev/null" 2>&1 | tee "$artifacts/install.log"
+    mark install
+    launcher=$(vm "ls -d $launcher")
+    session ~/.local/share/$repo/doctor 2>&1 | tee "$artifacts/doctor.log" ;;
+  *) echo "E2E_INSTALL must be checkout or plugin" >&2; exit 2 ;;
+esac
 mark doctor
 set +e
-session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' timeout -k 10 ${E2E_TIMEOUT:-1500} ./test --host" 2>&1 | tee "$artifacts/suite.log"
+session "E2E_STRICT_SEAT=1 E2E_OUT=~/e2e-out E2E_ONLY='${E2E_ONLY:-}' E2E_LAUNCHER=\"$launcher\" timeout -k 10 ${E2E_TIMEOUT:-1500} ./test --host" 2>&1 | tee "$artifacts/suite.log"
 suite=${PIPESTATUS[0]}
 set -e
 mark suite
