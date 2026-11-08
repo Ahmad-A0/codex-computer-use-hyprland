@@ -1,12 +1,15 @@
 // The provider is what Codex runs, and it exposes the official tools.
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { expect, helpers, js, provider, root, which } from '../lib.mjs';
 
 export default function (test) {
   test('Codex resolves cua_repl to this provider', async () => {
     const output = execFileSync('codex', ['mcp', 'get', 'cua_repl'], { encoding: 'utf8' });
-    expect(output.includes(join(root, 'scripts/launch.mjs')), output);
+    // E2E_LAUNCHER: the installed Codex plugin's command, run from its directory.
+    const launcher = process.env.E2E_LAUNCHER;
+    expect(launcher ? output.includes('args: ./bin/start') && output.includes(`cwd: ${dirname(dirname(launcher))}`)
+      : output.includes(join(root, 'scripts/launch.mjs')), output);
   }, { needs: which('codex') ? null : 'codex CLI not installed' });
 
   test('official MCP tools and native instructions', async () => {
