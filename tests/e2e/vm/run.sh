@@ -233,11 +233,13 @@ case ${E2E_INSTALL:-checkout} in
   plugin)
     # As a user would: `codex plugin add`, whose first start installs the latest
     # release into ~/.local/share. This tree, committed and tagged in the guest,
-    # stands in for the GitHub repository.
+    # stands in for the GitHub repository. With no client on stdin, the
+    # server exits once installed; the suite starts it again.
     launcher='$HOME/.codex/plugins/cache/codex-computer-use-hyprland/hyprland-computer-use/*/bin/start'
     session "git init -q && git add -A && git -c user.name=e2e -c user.email=e2e@invalid commit -qm e2e && git tag v999.0.0 &&
       codex plugin marketplace add ~/$repo && codex plugin add hyprland-computer-use@codex-computer-use-hyprland && codex mcp list &&
-      CODEX_HYPRLAND_REPO=~/$repo timeout 900 sh $launcher </dev/null" 2>&1 | tee "$artifacts/install.log"
+      { CODEX_HYPRLAND_REPO=~/$repo timeout 900 sh $launcher </dev/null || true; } &&
+      test -f ~/.local/share/$repo/build/installed-release" 2>&1 | tee "$artifacts/install.log"
     mark install
     launcher=$(vm "ls -d $launcher")
     session ~/.local/share/$repo/doctor 2>&1 | tee "$artifacts/doctor.log" ;;
