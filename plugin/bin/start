@@ -1,0 +1,33 @@
+#!/bin/sh
+# Codex starts this as the plugin's cua_repl MCP server. The plugin itself is
+# only this launcher: the provider lives in a clone that follows tested
+# releases (the same one the manual install uses), set up here on first start
+# and kept current by its hourly update timer. stdout is the MCP stream, so
+# everything before the exec writes to stderr.
+set -eu
+repo=${CODEX_HYPRLAND_REPO:-https://github.com/Ahmad-A0/codex-computer-use-hyprland}
+dir=${CODEX_HYPRLAND_HOME:-$HOME/.local/share/codex-computer-use-hyprland}
+# Codex passes MCP servers only a few variables; systemctl --user needs this one.
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+{
+  if [ ! -d "$dir/.git" ]; then
+    [ -e "$dir" ] && { echo "$dir exists but is not a git clone of $repo." >&2; exit 1; }
+    mkdir -p "$(dirname "$dir")"
+    exec 9>"$dir.lock"
+    flock 9
+    if [ ! -d "$dir/.git" ]; then
+      echo "First start: installing the Hyprland provider into $dir" >&2
+      git clone -q "$repo" "$dir.tmp.$$"
+      mv "$dir.tmp.$$" "$dir"
+    fi
+    exec 9>&-
+    rm -f "$dir.lock"
+  fi
+  # Marks the clone as plugin-managed: updates rebuild it but leave
+  # ~/.codex/config.toml alone, since the plugin registers cua_repl.
+  touch "$dir/.git/codex-hyprland-plugin"
+  # Without a user systemd instance, install now and skip the update timer.
+  [ -f "$dir/build/installed-release" ] || "$dir/scripts/update.sh" --enable || "$dir/scripts/update.sh"
+} 1>&2
+exec "$dir/bin/codex-computer-use-hyprland" serve

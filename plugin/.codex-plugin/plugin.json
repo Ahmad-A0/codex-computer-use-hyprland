@@ -1,0 +1,39 @@
+{
+  "name": "hyprland-computer-use",
+  "version": "0.1.0",
+  "description": "Computer use for Codex on Hyprland, with the macOS cua_repl API.",
+  "author": {
+    "name": "Ahmad-A0",
+    "url": "https://github.com/Ahmad-A0"
+  },
+  "homepage": "https://github.com/Ahmad-A0/codex-computer-use-hyprland",
+  "repository": "https://github.com/Ahmad-A0/codex-computer-use-hyprland",
+  "license": "MIT",
+  "keywords": ["computer-use", "hyprland", "linux", "wayland", "accessibility"],
+  "mcpServers": "./.mcp.json",
+  "hooks": {
+    "hooks": {
+      "Interrupt": [
+        { "hooks": [ { "type": "mcp_tool", "server": "cua_repl", "tool": "turn_ended",
+          "input": { "hook_event_name": "${hook_event_name}", "session_id": "${session_id}", "turn_id": "${turn_id}" } } ] }
+      ],
+      "SubagentStop": [
+        { "hooks": [ { "type": "mcp_tool", "server": "cua_repl", "tool": "turn_ended",
+          "input": { "hook_event_name": "${hook_event_name}", "session_id": "${agent_id}", "turn_id": "${turn_id}" } } ] }
+      ],
+      "Stop": [
+        { "hooks": [ { "type": "mcp_tool", "server": "cua_repl", "tool": "turn_ended",
+          "input": { "hook_event_name": "${hook_event_name}", "session_id": "${session_id}", "turn_id": "${turn_id}" } } ] }
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "Computer Use for Hyprland",
+    "shortDescription": "Let Codex use your Linux apps in the background",
+    "longDescription": "Codex sees and operates native apps on Hyprland the way it does on macOS: accessibility trees, clicks, typing, paste and screenshots, delivered to the target window without moving your cursor, keyboard focus or workspace.",
+    "developerName": "Ahmad-A0",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/Ahmad-A0/codex-computer-use-hyprland"
+  }
+}

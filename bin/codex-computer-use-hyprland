@@ -11,12 +11,14 @@ usage() {
   cat <<EOF
 Usage: ${0##*/} <command> [options]
 
-  register [--project] [--no-systemd]
+  register [--project|--no-config] [--no-systemd]
                 Build the plugin for the installed Hyprland, register cua_repl in
                 \${CODEX_HOME:-~/.codex}/config.toml (a backup is kept; other
                 settings are preserved), and enable the user unit
                 $unit.path that rebuilds the plugin after Hyprland upgrades.
-                --project registers in this checkout's .codex/ instead.
+                --project registers in this checkout's .codex/ instead;
+                --no-config leaves Codex config alone (the Codex plugin
+                registers cua_repl itself).
   unregister [--project] [--no-systemd]
                 Remove this installation's cua_repl entry (with a backup) and
                 disable the prebuild unit. Cached builds stay in $cache_dir.
@@ -28,11 +30,12 @@ EOF
 
 command=${1:-}
 [ "$#" -gt 0 ] && shift
-project= systemd=1
+project= config=1 systemd=1
 if [ "$command" = register ] || [ "$command" = unregister ]; then
   for option in "$@"; do
     case "$option" in
       --project) project=--project ;;
+      --no-config) [ "$command" = register ] || { usage >&2; exit 2; }; config= ;;
       --no-systemd) systemd= ;;
       *) usage >&2; exit 2 ;;
     esac
@@ -56,8 +59,10 @@ case "$command" in
   register)
     . "$project_dir/scripts/runtime.sh"
     "$project_dir/scripts/build-native.sh" >/dev/null
-    "$CODEX_CUA_RUNTIME/bin/node" "$project_dir/scripts/configure.mjs" --browser |
-      "$python_bin" "$project_dir/scripts/register-provider.py" $project
+    if [ -n "$config" ]; then
+      "$CODEX_CUA_RUNTIME/bin/node" "$project_dir/scripts/configure.mjs" --browser |
+        "$python_bin" "$project_dir/scripts/register-provider.py" $project
+    fi
     # Rebuild the plugin as soon as a Hyprland upgrade installs new headers, so
     # the next login finds a matching build. First use also builds it if absent.
     if [ -n "$systemd" ]; then

@@ -1,0 +1,20 @@
+{
+  "name": "codex-computer-use-hyprland",
+  "interface": {
+    "displayName": "Computer Use for Hyprland"
+  },
+  "plugins": [
+    {
+      "name": "hyprland-computer-use",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

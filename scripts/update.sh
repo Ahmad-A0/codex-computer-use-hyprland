@@ -55,7 +55,13 @@ if [ "$installed" = "$latest" ] && [ "$(git rev-parse HEAD)" = "$(git rev-parse 
 fi
 echo "Updating ${installed:-checkout} -> $latest"
 git -c advice.detachedHead=false checkout -q --detach "$latest"
-./install
+# A clone set up by the Codex plugin (plugin/bin/start) is registered by the
+# plugin, not in ~/.codex/config.toml.
+if [ -e "$(git rev-parse --absolute-git-dir)/codex-hyprland-plugin" ]; then
+  ./install --no-config
+else
+  ./install
+fi
 mkdir -p build
 echo "$latest" > build/installed-release
 exit
