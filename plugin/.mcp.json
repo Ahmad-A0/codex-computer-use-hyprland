@@ -2,15 +2,40 @@
   "mcpServers": {
     "cua_repl": {
       "command": "/bin/sh",
-      "args": ["./bin/start"],
+      "args": [
+        "./bin/start"
+      ],
       "cwd": ".",
       "enabled": true,
-      "enabled_tools": ["js", "js_reset", "turn_ended"],
-      "omit_tools_from": ["code_mode", "deferred"],
+      "enabled_tools": [
+        "js",
+        "js_reset",
+        "turn_ended"
+      ],
+      "omit_tools_from": [
+        "code_mode",
+        "deferred"
+      ],
       "startup_timeout_sec": 300,
-      "tools": { "js": { "output_token_limit": 25000 } },
-      "env_vars": ["HYPRLAND_INSTANCE_SIGNATURE", "WAYLAND_DISPLAY", "CODEX_HYPRLAND_REPO", "CODEX_HYPRLAND_HOME"],
-      "env": { "CUA_REPL_ENABLED_SURFACES": "browser,computer" }
+      "tools": {
+        "js": {
+          "output_token_limit": 25000
+        }
+      },
+      "env_vars": [
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "WAYLAND_DISPLAY",
+        "CODEX_HYPRLAND_REPO",
+        "CODEX_HYPRLAND_HOME",
+        "CODEX_HYPRLAND_LAUNCH_WORKSPACE",
+        "CODEX_HYPRLAND_CONFINE",
+        "CODEX_HYPRLAND_AUTH_GUARD",
+        "CODEX_HYPRLAND_APP_APPROVAL",
+        "CODEX_CUA_RUNTIME"
+      ],
+      "env": {
+        "CUA_REPL_ENABLED_SURFACES": "browser,computer"
+      }
     }
   }
 }

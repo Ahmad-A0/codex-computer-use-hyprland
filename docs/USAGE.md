@@ -2,7 +2,8 @@
 
 ## Settings
 
-Set these under `[mcp_servers.cua_repl.env]` in `~/.codex/config.toml`:
+Set these under `[mcp_servers.cua_repl.env]` in `~/.codex/config.toml` (with the
+Codex plugin, export them in the shell that starts Codex instead):
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -14,7 +15,10 @@ Set these under `[mcp_servers.cua_repl.env]` in `~/.codex/config.toml`:
 
 ## What it changes
 
-- `~/.codex/config.toml`: one `cua_repl` entry (the original is backed up).
+- `~/.codex/config.toml`: one `cua_repl` entry (the original is backed up). The
+  Codex plugin adds no entry: its `cua_repl` replaces the one in OpenAI's bundled
+  `unified-computer-use` plugin. A `cua_repl` entry in the config takes precedence
+  over both.
 - `~/.cache/codex-computer-use-hyprland/`: the compiled Hyprland plugin and a
   patched private copy of OpenAI's runtime. Installed OpenAI files are never modified.
 - The running compositor: the plugin is loaded on first use and stays until
@@ -45,11 +49,21 @@ a checkout on a branch or with local changes is never moved.
 
 ## Uninstall
 
+The Codex plugin:
+
+```sh
+codex plugin remove hyprland-computer-use@codex-computer-use-hyprland
+~/.local/share/codex-computer-use-hyprland/scripts/update.sh --disable
+```
+
+A config registration:
+
 ```sh
 codex-computer-use-hyprland unregister   # removes only this provider's cua_repl entry
 ```
 
-Then remove the checkout and `~/.cache/codex-computer-use-hyprland/`.
+Then remove the checkout (`~/.local/share/codex-computer-use-hyprland`) and
+`~/.cache/codex-computer-use-hyprland/`.
 
 ## Tests and CI
 
