@@ -13,6 +13,11 @@ on:
         type: choice
         options: [release, git]
         default: release
+      install:
+        description: checkout (./install) or plugin (codex plugin add)
+        type: choice
+        options: [checkout, plugin]
+        default: checkout
   workflow_call:
     inputs:
       ref:
@@ -29,7 +34,7 @@ on:
         description: Versions installed in the guest (chatgpt-bin, hyprland, @oai/cua, @oai/sky), as JSON
         value: ${{ jobs.vm.outputs.versions }}
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}-${{ inputs.hyprland }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}-${{ inputs.hyprland }}-${{ inputs.install }}
   cancel-in-progress: true
 jobs:
   vm:
@@ -49,6 +54,7 @@ jobs:
       - run: ./test
         env:
           E2E_ONLY: ${{ inputs.only }}
+          E2E_INSTALL: ${{ inputs.install || 'checkout' }}
       - uses: ./.github/actions/e2e-vm-host
         if: always()
         with:

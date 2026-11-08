@@ -27,14 +27,25 @@ Requirements: Arch Linux (or similar), Hyprland 0.56+, the Codex CLI, and the
 ChatGPT desktop package (`chatgpt-bin` from OpenAI's repository or
 `chatgpt-desktop` from the AUR), which provides the computer-use runtime.
 
+As a Codex plugin:
+
+```sh
+codex plugin marketplace add Ahmad-A0/codex-computer-use-hyprland
+codex plugin add hyprland-computer-use@codex-computer-use-hyprland
+```
+
+Start a new Codex session and ask it to use an app. The first start installs the
+latest release into `~/.local/share/codex-computer-use-hyprland` (about 30 seconds)
+and enables hourly updates; `~/.local/share/codex-computer-use-hyprland/doctor`
+checks the setup. The plugin takes over `cua_repl` from OpenAI's bundled
+computer-use plugin, browser use included.
+
+Or without the plugin, registered in `~/.codex/config.toml`:
+
 ```sh
 git clone https://github.com/Ahmad-A0/codex-computer-use-hyprland ~/.local/share/codex-computer-use-hyprland
 ~/.local/share/codex-computer-use-hyprland/scripts/update.sh --enable
 ```
-
-This installs the latest release, registers the provider in `~/.codex/config.toml`
-and checks for updates hourly. Start a new Codex session and ask it to use an app.
-`codex-computer-use-hyprland doctor` checks the setup.
 
 ## How it works
 
