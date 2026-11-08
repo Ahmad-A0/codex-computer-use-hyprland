@@ -242,7 +242,7 @@ case ${E2E_INSTALL:-checkout} in
       test -f ~/.local/share/$repo/build/installed-release" 2>&1 | tee "$artifacts/install.log"
     mark install
     launcher=$(vm "ls -d $launcher")
-    session ~/.local/share/$repo/doctor 2>&1 | tee "$artifacts/doctor.log" ;;
+    session "~/.local/share/$repo/doctor" 2>&1 | tee "$artifacts/doctor.log" ;;
   *) echo "E2E_INSTALL must be checkout or plugin" >&2; exit 2 ;;
 esac
 mark doctor
