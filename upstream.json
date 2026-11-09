@@ -3,9 +3,9 @@
   "tested": {
     "versions": {
       "chatgpt-bin": "26.1103.60933-1",
-      "hyprland": "0.57.1-1"
+      "hyprland": "0.57.2-1"
     },
-    "date": "2026-11-08",
-    "run": "https://github.com/Ahmad-A0/codex-computer-use-hyprland/actions/runs/42511536457"
+    "date": "2026-11-09",
+    "run": "https://github.com/Ahmad-A0/codex-computer-use-hyprland/actions/runs/42616966379"
   }
 }
