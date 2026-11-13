@@ -481,6 +481,12 @@ class Accessibility:
                 self.pump()
                 popups = self.popups(client, root)
         elements, seen, offsets = {}, set(), {}
+        # The app's other toplevels (its menus and dialogs) are separate
+        # windows even when the toolkit also lists them as children of this
+        # one (Chromium 157 does so for its context menus): an open menu is
+        # attached below as a popup, never walked as the window's content.
+        listed = self.listed[1] if self.listed[0] == client["pid"] else None
+        toplevels = {self.identity(child) for child in listed or []} - {self.identity(root)}
         deadline = time.monotonic() + 8
         limit = NODE_BUDGET
         truncated = False
@@ -503,7 +509,7 @@ class Accessibility:
                 truncated = True
                 return None
             ident = self.identity(obj)
-            if ident in seen:
+            if ident in seen or (depth > 0 and ident in toplevels):
                 return None
             obj.clear_cache()
             states = obj.get_state_set()
@@ -577,6 +583,7 @@ class Accessibility:
         # its app's tree. They get their own budget so a large window cannot
         # hide them; a menu already in the window's tree (a GTK 4 popover) stays.
         limit, deadline, root_truncated = len(seen) + 500, time.monotonic() + 2, truncated
+        toplevels = set()  # The popups themselves are such toplevels.
         attached = []
         for obj, offset in popups:
             truncated, popup_truncated = False, truncated
